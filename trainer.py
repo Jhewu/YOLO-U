@@ -389,7 +389,7 @@ if __name__ == "__main__":
     trainer = YOLOU_Trainer(model=model, 
                             yolo=YOLO_predictor,
                             data_path=DATA_PATH, 
-                            epochs=100,
+                            epochs=30,
                             )
     
     trainer.train()
