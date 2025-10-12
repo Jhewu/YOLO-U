@@ -1,0 +1,14 @@
+#For the data format, please refer to https://docs.ultralytics.com/datasets/segment/coco/
+
+# dataset root directory
+path: /home/jun/Desktop/inspirit/yolo_unet/train_yolo/YOLOU/data/stacked_segmentation
+
+# train images relative ('relative to path')
+train: images/train
+val: images/val
+
+channels: 4
+
+# Classes
+nc: 1
+names: ["whole_tumor"]
