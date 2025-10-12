@@ -6,6 +6,7 @@ Using a pretrained YOLOv12-seg model, YOLOU creates a UNet-like segmentation ref
 	(3) Decoder: Similar to YOLO12-seg pretrained backbone, but Conv2DTranspose + Skip connections
 
 YOLOU performs two passes: 
+
 	(1) First pass, performs inference with YOLOv12-seg, and caches the rough masks, encoder features and downsampled features (skip connections). 
 	(2) Second pass, perform inference through YOLOU (starting at bottleneck). 
 
@@ -23,5 +24,6 @@ The goal of this architecture, it's to create an efficient Brain Tumor Segmentat
 ├── loss.py 				# YOLOU loss
 ├── predictor.py			# YOLOU predictor
 ├── trainer.py				# YOLOU trainer
+```
 
 ## WORK IN PROGRESS
