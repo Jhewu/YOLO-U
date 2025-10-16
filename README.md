@@ -4,6 +4,7 @@
 [INSERT YOLOU-SEG++ DIAGRAM]
 
 YOLOU-Seg++ performs 1.5 passes: 
+
 	(1) **1st Pass**: forward pass with  YOLOv12, caching  the bbox coordinates, backbone output tensors and downsampled tensors (for skip connections). 
 	(2) **0.5 Pass**: forward pass (with the backbone output tensors) to the CSP bottleneck, and then decoder, where skip connections concatenates with backbone downsampled tensors and with the bbox coordinates (spatial guidance)
 
