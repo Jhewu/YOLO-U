@@ -45,21 +45,24 @@ class YOLOULoss(torch.nn.Module):
 
         if sigmoid: 
             preds = torch.sigmoid(preds)
-            init_preds = torch.sigmoid(init_preds)
+            # init_preds = torch.sigmoid(init_preds)
     
         # Only penalize pixels where GT says tumor exists, but Stage 1 missed it
-        fn_mask = (targets == 1) & (init_preds < 0.1)  # [B, 1, H, W]
-        focal_loss = (self.focal(preds, targets) * fn_mask.float()).mean()
-    
-        total_loss = (
-            (self.a/2) * self.dice(preds, targets) +
-            (self.a/2) * self.tversky(preds, targets) +
-            self.b * self.hausdorff(preds, targets) +
-            self.c * focal_loss
-            )
-        return total_loss
+    #     fn_mask = (targets == 1) & (init_preds < 0.1)  # [B, 1, H, W]
+    #     focal_loss = (self.focal(preds, targets) * fn_mask.float()).mean()
+    # 
+    #     total_loss = (
+    #         (self.a/2) * self.dice(preds, targets) +
+    #         (self.a/2) * self.tversky(preds, targets) +
+    #         self.b * self.hausdorff(preds, targets) +
+    #         self.c * focal_loss
+    #         )
 
-def dice_metric(pred, target, smooth=1e-8):
+        # return total_loss
+
+        return self.dice(preds, targets)
+
+def dice_metric(pred, target, smooth=1e-8) -> torch.tensor:
     """
     Computes the Dice Score/Coefficient for binary segmentation.
     Args:
@@ -86,7 +89,7 @@ def dice_metric(pred, target, smooth=1e-8):
     
     return dice.mean()  # Average across batch
 
-def dice_loss(pred: torch.tensor, target:torch.tensor, smooth: float = 1e-8):
+def dice_loss(pred: torch.tensor, target:torch.tensor, smooth: float = 1e-8) -> torch.tensor:
     """
     Computes the Dice Loss for binary segmentation.
     Args:
@@ -98,5 +101,3 @@ def dice_loss(pred: torch.tensor, target:torch.tensor, smooth: float = 1e-8):
     """
     dice_score = dice_metric(pred, target, smooth)
     return 1 - dice_score
-
-

@@ -20,6 +20,8 @@ from custom_yolo_trainer.custom_trainer import CustomSegmentationTrainer
 from modules.eca import ECA
 from modules.stn import SpatialTransformer
 
+
+
 class YOLOU(Module): 
     def __init__(self, 
                  trainer: CustomSegmentationTrainer, 
@@ -176,18 +178,17 @@ class YOLOU(Module):
             (torch.tensor): YOLOv12-Seg masks in batches
             (torch.tensor): cached backbone output (defined in _assign_hook)
         """
-        results = self.yolo_predictor(x)
+
+        with torch.no_grad():
+            results = self.yolo_predictor(x)
 
         # Sums the masks and stack it
-        mask_batch = []
-        for result in results: 
-            if result.masks is not None: 
-                mask_sum = torch.sum(result.masks.data, dim = 0)
-            else: 
-                mask_sum = torch.zeros(result.orig_shape[0], result.orig_shape[1]).to("cuda")
-            mask_batch.append(mask_sum.unsqueeze(0))
+        mask_batch = torch.zeros((len(results), 1, *results[0].orig_shape), device='cuda')
+        for i, result in enumerate(results):
+            if result.masks is not None:
+                mask_batch[i] = torch.sum(result.masks.data, dim=0).unsqueeze(0)
 
-        return torch.stack(mask_batch), self.activation_cache.pop()
+        return mask_batch, self.activation_cache.pop()
     
     def _STN_forward(self, x: torch.tensor) -> torch.tensor: 
         """
@@ -263,7 +264,7 @@ class YOLOU(Module):
             layer.to("cuda")
 
             if i in self.skip_decoder_indices: 
-                print(len(self.skip_connections))
+                # print(len(self.skip_connections))
                 a = self.skip_connections.pop()
                 x = self._create_concat_block(a, x)
 

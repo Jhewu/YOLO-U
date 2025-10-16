@@ -1,5 +1,5 @@
 from modules.YOLOU import YOLOU
-from custom_yolo_predictor.custom_detseg_predictor import CustomSegmentationPredictor
+from custom_yolo_predictor.custom_detseg_predictor import CustomSegmentationPredictor, process_mask
 from custom_yolo_trainer.custom_trainer import CustomSegmentationTrainer
 
 from dataset import SegmentationDataset
@@ -31,8 +31,8 @@ class YOLOU_Trainer:
                 device: str = "cuda",
                 early_stopping_start: int = 50,
                 image_size: int = 160, 
-                batch_size: int = 128, 
-                lr: float = 1e-4,
+                batch_size: int = 64, 
+                lr: float = 1e-3,
                 epochs: int = 100, 
                 patience: int = 25,
                 load_and_train: bool = False,
@@ -363,8 +363,11 @@ class YOLOU_Trainer:
         torch.save(model.state_dict(), os.path.join(os.path.join(model_dir, "last.pth")))
         self.plot_loss_curves(save_path=dest_dir)
 
+import nms
+# from custom_yolo_predictor.custom_yolo_detseg_predictor import process_mask
+
 if __name__ == "__main__": 
-    MODEL_DIR = "train_yolo12n-seg_first_iteration/yolo12n-seg_data3/weights/best.pt"
+    MODEL_DIR = "yolo_checkpoint/weights/best.pt"
     DATA_PATH = "data/stacked_segmentation"
 
     # Create trainer and predictor instances
@@ -384,14 +387,54 @@ if __name__ == "__main__":
     YOLO_trainer.setup_model()["model"]         
     YOLO_predictor.setup_model(MODEL_DIR)
 
+
+    """
+    model = YOLO_predictor.model
+
+
+    x = torch.ones(1, 4, 160, 160).to("cuda")
+    # model output
+    raw_preds = model(x, augment=False)
+    preds, protos = raw_preds[0], raw_preds[1][-1]
+
+    nms_preds = nms.non_max_suppression(preds)[0]
+
+    if nms_preds is None or len(nms_preds) == 0:
+        masks = torch.zeros((0, *x.shape[2:]), device=x.device)  # empty mask
+    else:
+        protos = protos[0]  # remove batch dim
+        masks = process_mask(protos, nms_preds[:, 6:], nms_preds[:, :4], x.shape[2:], upsample=True)
+    """
+
+    """
+    x = torch.ones(1, 4, 160, 160).to("cuda")
+
+    raw_preds = model(x, augment=False)
+    preds, protos = raw_preds[0], raw_preds[1][-1] if isinstance(raw_preds[1], tuple) else raw_preds[1]
+
+    nms_preds = nms.non_max_suppression(preds)[0]
+
+    print(len(nms_preds))
+    print(nms_preds.shape[0])
+
+    # if nms_preds is None or len(nms_preds) == 0: 
+    #     masks = torch.zeros((0, *x.shape[2:]), device=x.device)  # empty mask
+    # else: 
+
+
+    
+    protos = protos[0]
+    masks = process_mask(protos, preds[0][:, 6:], preds[0][:, :4], x.shape[2:], upsample=True)
+    """
+
+    # print(masks)
+
     # Create YOLOU instance
     model = YOLOU(trainer=YOLO_trainer, predictor=YOLO_predictor).to("cuda")
     trainer = YOLOU_Trainer(model=model, 
                             yolo=YOLO_predictor,
                             data_path=DATA_PATH, 
-                            epochs=30,
+                            epochs=50,
                             )
     
     trainer.train()
-
-    
