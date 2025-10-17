@@ -1,4 +1,4 @@
-from torch.nn import Sequential, Module
+from torch.nn import Sequential, Module, Upsample
 from torch import nn
 import torch
 
@@ -10,10 +10,7 @@ from ultralytics.nn.modules import (
     BottleneckCSP, 
 
     ## For the decoder reconstruct
-    Conv, C3k2, A2C2f, 
-    
-    ## To upsample in decoder
-    ConvTranspose)
+    Conv, C3k2, A2C2f)
 
 # local/custom scripts
 from custom_yolo_predictor.custom_detseg_predictor import CustomDetectionPredictor
@@ -22,10 +19,10 @@ from modules.eca import ECA
 from modules.stn import SpatialTransformer
 
 class YOLOUSegPlusPlus(Module): 
-    def __init__(self, 
-                 trainer: CustomDetectionTrainer, 
+    def __init__(self,
                  predictor: CustomDetectionPredictor,
-                 target_modules_indices: List[int] = [0, 1, 3, 5, 7]): 
+                 verbose: bool = False,
+                 target_modules_indices: List[int] = [1, 3, 5]): 
         """
         Creates a YOLOU-Seg++ Network with Pretrained YOLOv12 (detection) model
         Main Idea: Using YOLOv12 bbox as guidance in UNet skip connections and recycling YOLOv12 backbone as the encoder
@@ -70,55 +67,52 @@ class YOLOUSegPlusPlus(Module):
         """
 
         super().__init__()
-        ### YOLO12 (detect) Sections
-        self.yolo_predictor = predictor
-        self.yolo_backbone = predictor.model.model.model[0:9] # <- obtain sequential modules from 0-8
-        
-        ### YOLOv12-Seg Sections
-        self.yolo_trainer = trainer
-        self.yolo_predictor = predictor
-        self._yolo_seq = self.yolo_predictor.model.model.model
+        ### YOLO12 (detect) Section
+        self.yolo_predictor = predictor # for inference
 
-        ### YOLOU Sections
-        self.encoder = self._yolo_seq[0:9]
+        ### YOLOU-Seg++ Architecture Section
+        self.encoder = predictor.model.model.model[0:9] # <- obtain sequential modules from 0-8 for training
+        
+        self.bottleneck = Sequential(        
+                BottleneckCSP(c1=256, 
+                              c2=256, 
+                              n=1, 
+                              shortcut=True, 
+                              g=1,
+                              e=0.5).to("cuda"),
+                BottleneckCSP(c1=256, 
+                              c2=256, 
+                              n=1, 
+                              shortcut=True, 
+    	                      g=1,
+                              e=0.5).to("cuda")
+                              )      
+        
         self.decoder = self._construct_decoder_from_encoder()
-        self.bottleneck1 = Sequential(
-            BottleneckCSP(c1=256, 
-                          c2=256, 
-                          n=1, 
-                          shortcut=True, 
-	                          g=1,
-                          e=0.5)).to("cuda")
-        self.bottleneck2 = Sequential(
-            BottleneckCSP(c1=512, 
-                          c2=256, 
-                          n=1, 
-                          shortcut=True, 
-	                          g=1,
-                          e=0.5)).to("cuda")
+        
         self.stn = None
         self.eca = None
-        # TODO: Make this dynamic and not hardcoded
-        self.last_conv = ConvTranspose(
-                        c1=16, 
-                        c2=1,
-                        s=2,
-                        p=1, 
-                        bn=True,
-        
-                        # To reconstruct the image size of the respective Conv layer
-                        k=4)
+
+        self.last_conv = Conv(
+                c1=16, 
+                c2=1,
+                k=3)
+
+        self.verbose = verbose
         
         ### YOLOU Helper
         self.skip_encoder_indices = set(target_modules_indices)
         self.skip_decoder_indices = set([abs(target_modules_indices[-1] - item + 1) # ---> Reverses and normalizes the indices
                                              for item in target_modules_indices[::-1]])
-
         self.skip_connections = []
-        self.activation_cache = []
 
-        self._assign_hooks()
-        self.activation_cache.clear()
+        if torch.cuda.is_available():
+            print(f"\nCUDA {torch.cuda.get_device_name(0)} is available, forwarding YOLOv12 backbone twice is faster than forward hooks...\n")            
+        else: 
+            print(f"\nCUDA is not available (CPU), using forward hooks to save on compute...\n")
+            self.activation_cache = []
+            self._assign_hooks()            
+            self.activation_cache.clear()
 
     def _hook_fn(self, module, input, output):
         """
@@ -126,8 +120,8 @@ class YOLOUSegPlusPlus(Module):
         self.activation_cache
         """
         self.activation_cache.append(output)
-        # print(f"\nSuccessfully cached the output {module}\n")
-        # print(f"\nSuccessfully cached the output")
+        if self.verbose:
+            print(f"\nSuccessfully cached the output {module}\n")
 
     def _assign_hooks(self, modules: list[str] = ["0", 
                                                 "1",
@@ -136,6 +130,7 @@ class YOLOUSegPlusPlus(Module):
                                                 "7",
                                                 "8"]):
         """
+        TODO: REWORK THIS METHOD
         Assigns forward hooks for YOLOv12-Seg forward
         Depends on self._hook_fn()
 
@@ -143,10 +138,11 @@ class YOLOUSegPlusPlus(Module):
             modules (list[str]): List containing the names of the modules
         """        
         found = []
-        for name, module in self._yolo_seq.named_modules():
+        for name, module in self.encoder.named_modules():
             if name in modules:
                 module.register_forward_hook(self._hook_fn)
-                print(f"Hook registered on: {name} -> {module}")
+                if verbose: 
+                    print(f"Hook registered on: {name} -> {module}")
                 found.append(name)
         
         if not found:
@@ -228,57 +224,76 @@ class YOLOUSegPlusPlus(Module):
         self.eca = ECA().to("cuda")                                                             # Applying masks attention
         return self.eca(concat)
 
-    def forward(self, x: torch.tensor) -> torch.tensor: 
+    def inference(self): 
+        #         # decoder
+        # # COMMENT: for some reason self.yolo_predictor(x) triggers forward hooks twice, therefore
+        # #          take the middle and +1, because we popped at YOLO_forward()
+        # if len(self.activation_cache) > 6:
+        #     # print("\nActivation cache is greater than 6!")
+        #     self.skip_connections = self.activation_cache[(len(self.activation_cache)//2)+1:]
+        # else: 
+        #     # print("\nActivation cache is less than 6!")
+        #     self.skip_connections = self.activation_cache
+
+
+        return
+
+    def forward(self, x: torch.tensor, heatmaps: List[torch.tensor]) -> torch.tensor: 
         """
-        Main forward step of YOLOU 
+        Main Forward Step for YOLOU-Seg++ (for Training)
+        Use self.inference() for inference 
 
         Args:
-            x (torch.tensor): Input tensor [B, 4, H, W]
+            x        (torch.tensor):        Input tensor [B, 4, H, W]
+            heatmaps (List[torch.tensor]):  List of resized heatmaps tensors to concatenate at skips [1, 1, h, w], where h and w are resized heights and weights (< H and W)
 
         Returns:
             x (torch.tensor): Output tensor [B, 4, H, W]
-        """
-        # encoder
-        yolo_x, backbone_x = self.YOLO_forward(x)
-        
-        # bottleneck
-        backbone_x, theta = self._STN_forward(backbone_x.clone())
-        x = self.bottleneck1(backbone_x)
-        x = self._concat_masks_forward(yolo_x, x)
-        x = self.bottleneck2(x)
 
-        # print(f"\nThis is initial activation cache {len(self.activation_cache)}")
+        TODO: Combine bottleneck modules into an attribute
+        """
+
+        
+        # Encoder (frozen)
+        self.skip_connections = []                  # <- reset each forward
+        with torch.no_grad(): 
+            for idx, module in enumerate(self.encoder): 
+                x = module(x)
+                if idx in self.skip_encoder_indices: 
+                    self.skip_connections.append(x) # <- manually cache tensors for skips
+
+        # Bottleneck (trainable)
+        x, theta = self._STN_forward(x) # <- learns geometric transformation, to correct encoder features, theta is for troubleshooting
+        x = ECA()(x)                    # <- weights the channels
+        x = self.bottleneck(x)          # <- 2 Consecutive CSP Bottleneck blocks
 
         # decoder
-        # COMMENT: for some reason self.yolo_predictor(x) triggers forward hooks twice, therefore
-        #          take the middle and +1, because we popped at YOLO_forward()
-        if len(self.activation_cache) > 6:
-            # print("\nActivation cache is greater than 6!")
-            self.skip_connections = self.activation_cache[(len(self.activation_cache)//2)+1:]
-        else: 
-            # print("\nActivation cache is less than 6!")
-            self.skip_connections = self.activation_cache
 
-        # Convert .children() -> generator to list 
-        children = list(self.decoder.children())
-        children = children[:-1]
 
-        for i, layer in enumerate(children):
-            layer.to("cuda")
 
-            if i in self.skip_decoder_indices: 
-                # print(len(self.skip_connections))
-                a = self.skip_connections.pop()
-                x = self._create_concat_block(a, x)
 
-            x = layer(x)
 
-        # Last layer of the Decoder
-        x = self.last_conv(x)
 
-        self.activation_cache.clear()
-        self.skip_connections.clear()
-        return yolo_x, x
+#         # Convert .children() -> generator to list 
+#         children = list(self.decoder.children())
+#         children = children[:-1]
+# 
+#         for i, layer in enumerate(children):
+#             layer.to("cuda")
+# 
+#             if i in self.skip_decoder_indices: 
+#                 # print(len(self.skip_connections))
+#                 a = self.skip_connections.pop()
+#                 x = self._create_concat_block(a, x)
+# 
+#             x = layer(x)
+# 
+#         # Last layer of the Decoder
+#         x = self.last_conv(x)
+# 
+#         self.activation_cache.clear()
+#         self.skip_connections.clear()
+#         return yolo_x, x
 
     def _reverse_module_channels(self, module: nn.Module) -> nn.Module:
         """
@@ -292,34 +307,54 @@ class YOLOUSegPlusPlus(Module):
 
         Returns:
             (nn.Module): Corresponding module to built the decoder
+
+        -------------------------------------------------------------------------------------------------------------
+        YOLOv12 backbone
+        -------------------------------------------------------------------------------------------------------------
+                                   from  n    params  module                                       arguments
+          0                  -1  1       608  ultralytics.nn.modules.conv.Conv             [4, 16, 3, 2]
+          1                  -1  1      4672  ultralytics.nn.modules.conv.Conv             [16, 32, 3, 2]
+          2                  -1  1      6640  ultralytics.nn.modules.block.C3k2            [32, 64, 1, False, 0.25]
+          3                  -1  1     36992  ultralytics.nn.modules.conv.Conv             [64, 64, 3, 2]
+          4                  -1  1     26080  ultralytics.nn.modules.block.C3k2            [64, 128, 1, False, 0.25]
+          5                  -1  1    147712  ultralytics.nn.modules.conv.Conv             [128, 128, 3, 2]
+          6                  -1  2    180864  ultralytics.nn.modules.block.A2C2f           [128, 128, 2, True, 4]
+          7                  -1  1    295424  ultralytics.nn.modules.conv.Conv             [128, 256, 3, 2]
+          8                  -1  2    689408  ultralytics.nn.modules.block.A2C2f           [256, 256, 2, True, 1]
+        -------------------------------------------------------------------------------------------------------------
         """
 
         if isinstance(module, Conv):
-            return ConvTranspose(
-                c1=module.conv.out_channels, 
-                c2=module.conv.in_channels,
-                s=module.conv.stride,
-                p=module.conv.padding, 
-                bn=True,
-
-                # To reconstruct the image size of the respective Conv layer
-                k=4)
+            return Sequential(
+                Upsample(
+                    scale_factor = 2, 
+                    mode = "bilinear", 
+                    align_corners = True
+                    ), 
+                Conv(
+                    c1=module.conv.out_channels, 
+                    c2=module.conv.in_channels,
+                    k=module.conv.kernel_size, 
+                    p=module.conv.padding
+                    )
+                )
             
         elif isinstance(module, A2C2f):
             return A2C2f(
                 c1=module.cv2.conv.out_channels,
                 c2=module.cv1.conv.in_channels,
-                 
-                # Referencing YOLO12-seg model summary at training start
+                
+                # Referencing YOLOv12 (detect) model summary (see docstrings)
+                area=1,
+                n=2,
                 a2=True)
-
         elif isinstance(module, C3k2): 
             return C3k2(
                 c1=module.cv2.conv.out_channels, 
                 c2=module.cv1.conv.in_channels,
                 
-                # Referencing YOLO12-seg model summary at training start
-                n=2, 
+                # Referencing YOLOv12 (detect) model summary (see docstrings)
+                n=1, 
                 c3k=False, 
                 e=0.25)
     
@@ -340,10 +375,9 @@ class YOLOUSegPlusPlus(Module):
                 
         return nn.Sequential(decoder_modules)
     
-    def check_encoder_decoder_symmetry(self, backbone_last_index: int) -> None: 
+    def check_encoder_decoder_symmetry(self, backbone_last_index: int = 9) -> None: 
         """
         Prints encoder and decoder to check for symmetry
-
         Args:
             backbone_last_index (int): Last index of the YOLO backbone in YOLOv12 Seg
         """
@@ -353,8 +387,8 @@ class YOLOUSegPlusPlus(Module):
 
     def print_yolo_named_modules(self) -> None: 
         """
-        Prints YOLOv12-Seg named modules. 
+        Prints YOLOv12 (detect) named modules. 
         Used for caching "x" in between modules
         """
-        for name, module in self._yolo_seq.named_modules(): 
+        for name, module in self.encoder.named_modules(): 
             print(f"\n{name}")

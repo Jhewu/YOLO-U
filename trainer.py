@@ -2,7 +2,7 @@ from modules.YOLOUSegPlusPlus import YOLOUSegPlusPlus
 from custom_yolo_predictor.custom_detseg_predictor import CustomSegmentationPredictor, process_mask
 from custom_yolo_trainer.custom_trainer import CustomSegmentationTrainer
 
-from dataset import SegmentationDataset
+from dataset import CustomDataset
 from loss import dice_metric, dice_loss
 from loss import YOLOULoss 
 
@@ -370,22 +370,25 @@ if __name__ == "__main__":
     # Create trainer and predictor instances
     t_args = dict(model=MODEL_DIR,
                 data=f"data/data.yaml", 
-                verbose=False,
+                verbose=True,
                 imgsz=160)
     
     p_args = deepcopy(t_args)
     p_args["save"] = False      # --> Needs to be False for predictor
                                 #     Otherwise error
-
-    YOLO_trainer = CustomSegmentationTrainer(overrides=t_args)
+                                
     YOLO_predictor = CustomSegmentationPredictor(overrides=p_args)
 
     # Load the model checkpoint
-    YOLO_trainer.setup_model()["model"]         
     YOLO_predictor.setup_model(MODEL_DIR)
 
+    # Create YOLOU instance
+    model = YOLOUSegPlusPlus(predictor=YOLO_predictor).to("cuda")
 
+    x = torch.ones(1, 4, 160, 160).to("cuda")
+    model.forward(x, x)
 
+    
 
 
     """
