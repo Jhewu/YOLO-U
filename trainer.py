@@ -1,4 +1,4 @@
-from modules.YOLOU import YOLOU
+from modules.YOLOUSegPlusPlus import YOLOUSegPlusPlus
 from custom_yolo_predictor.custom_detseg_predictor import CustomSegmentationPredictor, process_mask
 from custom_yolo_trainer.custom_trainer import CustomSegmentationTrainer
 
@@ -22,9 +22,9 @@ from tqdm import tqdm
 import pandas as pd
 import matplotlib.pyplot as plt
 
-class YOLOU_Trainer: 
+class Trainer: 
     def __init__(self,
-                model: YOLOU,
+                model: YOLOUSegPlusPlus,
                 yolo: CustomSegmentationPredictor,
                 data_path: str, 
                 model_path: str = None,
@@ -363,9 +363,6 @@ class YOLOU_Trainer:
         torch.save(model.state_dict(), os.path.join(os.path.join(model_dir, "last.pth")))
         self.plot_loss_curves(save_path=dest_dir)
 
-import nms
-# from custom_yolo_predictor.custom_yolo_detseg_predictor import process_mask
-
 if __name__ == "__main__": 
     MODEL_DIR = "yolo_checkpoint/weights/best.pt"
     DATA_PATH = "data/stacked_segmentation"
@@ -386,6 +383,9 @@ if __name__ == "__main__":
     # Load the model checkpoint
     YOLO_trainer.setup_model()["model"]         
     YOLO_predictor.setup_model(MODEL_DIR)
+
+
+
 
 
     """
@@ -430,11 +430,11 @@ if __name__ == "__main__":
     # print(masks)
 
     # Create YOLOU instance
-    model = YOLOU(trainer=YOLO_trainer, predictor=YOLO_predictor).to("cuda")
-    trainer = YOLOU_Trainer(model=model, 
-                            yolo=YOLO_predictor,
-                            data_path=DATA_PATH, 
-                            epochs=50,
-                            )
-    
-    trainer.train()
+    # model = YOLOU(trainer=YOLO_trainer, predictor=YOLO_predictor).to("cuda")
+    # trainer = YOLOU_Trainer(model=model, 
+    #                         yolo=YOLO_predictor,
+    #                         data_path=DATA_PATH, 
+    #                         epochs=50,
+    #                         )
+    # 
+    # trainer.train()

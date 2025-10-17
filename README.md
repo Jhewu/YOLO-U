@@ -1,7 +1,7 @@
 # YOLOU-Seg++: an Improved 1.5 Stage YOLO Segmentation Model (for BraTS-SSA) in PyTorch 
 **YOLOU-Seg++** is an improved "1.5 stage" YOLO segmentation model that leverages YOLO's strenghts in classification and location strength, and UNet-like strength in pixel-level segmentation, with a smart tensor caching mechanism, that improves over vanilla YOLO segmentation, and serves as an "add-in" module to convert a strong YOLO detection model into a segmentation model. Whereas YOLO segmentation models are often constraint by the bbox produced by the detect branch (for efficiency reasons), YOLOU-Seg++ fuses the bounding box at skip connections as a gating/suggestive mechanism, allowing the model full context of the image. 
 
-[INSERT YOLOU-SEG++ DIAGRAM]
+**[INSERT YOLOU-SEG++ DIAGRAM]**
 
 YOLOU-Seg++ performs 1.5 passes: 
 
