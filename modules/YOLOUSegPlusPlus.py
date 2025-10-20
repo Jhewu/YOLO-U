@@ -272,6 +272,7 @@ class YOLOUSegPlusPlus(Module):
             module.to("cuda")
             if idx in set([1, 3, 5, 7, 8]):             # <- Upsampling
                 x  = self._upsample(x) 
+
             if idx in self.skip_decoder_indices:        # <- If it's a skip connections
                 skip = self.skip_connections.pop()
                 size = x.size()[1]                      # <- Save the initial size (to transform back)
@@ -290,8 +291,19 @@ class YOLOUSegPlusPlus(Module):
                 x = Conv(
                     c1=x.size()[1],
                     c2=size, 
-                    k=3).to("cuda")(x)
-            x = module(x)
+                    k=3).to("cuda")(x)                      # <- Recast channels to size
+
+            if idx not in set([1, 3, 5, 7, 8]): # <- If non-upsampling blocks (YOLO Modules), add residual (better gradient flow)
+                residual = x.clone() 
+                x = module(x)
+                if x.shape == residual.shape: 
+                    x = x + residual
+                else: 
+                    proj = nn.Conv2d(in_channels=residual.size(1),
+                                    out_channels=x.size(1), 
+                                    kernel_size=1).to(x.device)
+                    x = x + proj(residual)
+            else: x = module(x)
 
         # Output (trainable)
         x = self.last_conv( self._upsample(x) )
