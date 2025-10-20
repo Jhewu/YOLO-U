@@ -24,11 +24,12 @@ class YOLOUSegPlusPlus(Module):
                  verbose: bool = False,
                  target_modules_indices: List[int] = [2, 4, 6]): 
         """
+        TODO: UPDATE THE DOCUMENTATION
+        
         Creates a YOLOU-Seg++ Network with Pretrained YOLOv12 (detection) model
         Main Idea: Using YOLOv12 bbox as guidance in UNet skip connections and recycling YOLOv12 backbone as the encoder
         
         Args: 
-            trainer (CustomSegmentationTrainer): Custom YOLO segmentation trainer allowing 4-channels
             predictor (CustomSegmentationTrainer): Custom YOLO segmentation predictor allowing 4-channels
             target_modules_indices (list [int]): list of indices to add skip connections (in YOLOv12-Seg every downsample)
 
@@ -251,47 +252,30 @@ class YOLOUSegPlusPlus(Module):
         Returns:
             x (torch.tensor): Output tensor [B, 4, H, W]
 
-        TODO: Combine bottleneck modules into an attribute
+        TODO: Implement Residual Connections for the non-YOLO Layers
         """
-
         # Encoder (frozen)
         self.skip_connections = []                  # <- Reset at each forward
         with torch.no_grad(): 
             for idx, module in enumerate(self.encoder): 
                 module.to("cuda")
-                print("Encoder Before", x.size())
                 x = module(x)           
-                # print("Encoder After", x.size())     
                 if idx in self.skip_encoder_indices: 
                     self.skip_connections.append(x) # <- Manually cache tensors for skips
-                    # print("Skip Connections Appended", x.size())
 
         # Bottleneck (trainable)
         x = self.bottleneck(x)    
-        print("Bottleneck After", x.size())
 
         # Decoder (trainable)
-        children = list(self.decoder.children())      # <- convert .children() -> generator -> list         
-        for idx, module in enumerate(children[:-1]):  # <- remove last Conv, because last Conv must be 1-channel (binary mask)
+        children = list(self.decoder.children())        # <- Convert .children() (generator type) -> list         
+        for idx, module in enumerate(children[:-1]):    # <- Remove last Conv, because last Conv must be 1-channel (binary mask)
             module.to("cuda")
-          
-            if idx in set([1, 3, 5, 7, 8]):         # <- if, it's an upsample layer, we must upsample  
-                x  = self._upsample(x) # TODO: MIGHT APPLY A CONV LAYER HERE
-            
-            if idx in self.skip_decoder_indices:      # <- it's a skip connections
+            if idx in set([1, 3, 5, 7, 8]):             # <- Upsampling
+                x  = self._upsample(x) 
+            if idx in self.skip_decoder_indices:        # <- If it's a skip connections
                 skip = self.skip_connections.pop()
-                # if len(self.skip_connections) == 1:              # <- We do not fuse heatmap, if it's the last element (P1 in YOLOv12)
-                #     print(skip.size(), x.size())
-                #     x = torch.cat([skip, x], dim=1).to("cuda")  
-                #     x = self._eca(x)
-                #     size = x.size()[1]
-                #     x = Conv(
-                #         c1=x.size()[1],
-                #         c2=size, 
-                #         k=3).to("cuda")(x) 
-                # else: 
-
-                if heatmaps: 
+                size = x.size()[1]                      # <- Save the initial size (to transform back)
+                if heatmaps:                            # <- If there are heatmaps, we fuse the heatmap (learnable gating) with skips
                     heatmap = heatmaps.pop()
                     fusion = nn.Conv2d(
                                 in_channels = heatmap.size()[1],
@@ -299,29 +283,18 @@ class YOLOUSegPlusPlus(Module):
                                 kernel_size = 1, 
                                 ).to("cuda")
                     gate = self._sigmoid(fusion(heatmap))
-                    skip = skip * (1.0 + nn.Parameter(torch.tensor(1.0)).to("cuda") * gate) # Fused the heatmap (learnable gating) with skips
-                    size = x.size()[1]
-
-                # print("Comparison Point")
-                # print(skip.size(), x.size())
-                # print("Decoder Before", x.size(), skip.size())
-                size = x.size()[1]
-                x = torch.cat([skip, x], dim=1).to("cuda")  
-                x = self._eca(x)
+                    skip = skip * (1.0 + nn.Parameter(torch.tensor(1.0)).to("cuda") * gate) 
+                    
+                x = torch.cat([skip, x], dim=1).to("cuda")  # <- Concatenate
+                x = self._eca(x)                            # <- Re-weight the Concat channels
                 x = Conv(
                     c1=x.size()[1],
                     c2=size, 
                     k=3).to("cuda")(x)
-                # print("Decoder Before", x.size())    
-
-            # print("Decoder Before", x.size())
             x = module(x)
-            print("Decoder After", x.size())
 
+        # Output (trainable)
         x = self.last_conv( self._upsample(x) )
-        print("Last Conv After", x.size())
-            
-        # Last layer of the Decoder
         return x
 
     def _reverse_module_channels(self, module: nn.Module) -> nn.Module:
