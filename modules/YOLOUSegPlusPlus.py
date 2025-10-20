@@ -22,7 +22,7 @@ class YOLOUSegPlusPlus(Module):
     def __init__(self,
                  predictor: CustomDetectionPredictor,
                  verbose: bool = False,
-                 target_modules_indices: List[int] = [1, 3, 5]): 
+                 target_modules_indices: List[int] = [2, 4, 6]): 
         """
         Creates a YOLOU-Seg++ Network with Pretrained YOLOv12 (detection) model
         Main Idea: Using YOLOv12 bbox as guidance in UNet skip connections and recycling YOLOv12 backbone as the encoder
@@ -70,42 +70,43 @@ class YOLOUSegPlusPlus(Module):
         ### YOLO12 (detect) Section
         self.yolo_predictor = predictor # for inference
 
-        ### YOLOU-Seg++ Architecture Section
+        ### YOLOU-Seg++ Modules Section
         self.encoder = predictor.model.model.model[0:9] # <- obtain sequential modules from 0-8 for training
-        
         self.bottleneck = Sequential(        
+                SpatialTransformer(in_channels=self.encoder[-1].cv2.conv.out_channels).to("cuda"), # <- learns geometric transformation, to correct encoder features, theta is for troubleshooting
+                ECA().to("cuda"), # <- weights the channels
                 BottleneckCSP(c1=256, 
                               c2=256, 
-                              n=1, 
+                              n=2, 
                               shortcut=True, 
                               g=1,
-                              e=0.5).to("cuda"),
-                BottleneckCSP(c1=256, 
-                              c2=256, 
-                              n=1, 
-                              shortcut=True, 
-    	                      g=1,
                               e=0.5).to("cuda")
-                              )      
-        
+                )
         self.decoder = self._construct_decoder_from_encoder()
-        
-        self.stn = None
-        self.eca = None
-
+        self._upsample = Upsample(
+                    scale_factor = 2, 
+                    mode = "bilinear", 
+                    align_corners = True
+                    )
+        self._sigmoid = nn.Sigmoid()
+        self._eca = ECA()
         self.last_conv = Conv(
                 c1=16, 
                 c2=1,
-                k=3)
-
+                k=3
+                )
+                
+        ### Miscellaneous Section
         self.verbose = verbose
-        
-        ### YOLOU Helper
         self.skip_encoder_indices = set(target_modules_indices)
         self.skip_decoder_indices = set([abs(target_modules_indices[-1] - item + 1) # ---> Reverses and normalizes the indices
                                              for item in target_modules_indices[::-1]])
-        self.skip_connections = []
 
+        print(self.skip_encoder_indices)
+        # print(self.skip_decoder_indices)
+        self.skip_decoder_indices = set([2, 4, 6])
+                                            
+        self.skip_connections = []
         if torch.cuda.is_available():
             print(f"\nCUDA {torch.cuda.get_device_name(0)} is available, forwarding YOLOv12 backbone twice is faster than forward hooks...\n")            
         else: 
@@ -253,47 +254,75 @@ class YOLOUSegPlusPlus(Module):
         TODO: Combine bottleneck modules into an attribute
         """
 
-        
         # Encoder (frozen)
-        self.skip_connections = []                  # <- reset each forward
+        self.skip_connections = []                  # <- Reset at each forward
         with torch.no_grad(): 
             for idx, module in enumerate(self.encoder): 
-                x = module(x)
+                module.to("cuda")
+                print("Encoder Before", x.size())
+                x = module(x)           
+                # print("Encoder After", x.size())     
                 if idx in self.skip_encoder_indices: 
-                    self.skip_connections.append(x) # <- manually cache tensors for skips
+                    self.skip_connections.append(x) # <- Manually cache tensors for skips
+                    # print("Skip Connections Appended", x.size())
 
         # Bottleneck (trainable)
-        x, theta = self._STN_forward(x) # <- learns geometric transformation, to correct encoder features, theta is for troubleshooting
-        x = ECA()(x)                    # <- weights the channels
-        x = self.bottleneck(x)          # <- 2 Consecutive CSP Bottleneck blocks
+        x = self.bottleneck(x)    
+        print("Bottleneck After", x.size())
 
-        # decoder
+        # Decoder (trainable)
+        children = list(self.decoder.children())      # <- convert .children() -> generator -> list         
+        for idx, module in enumerate(children[:-1]):  # <- remove last Conv, because last Conv must be 1-channel (binary mask)
+            module.to("cuda")
+          
+            if idx in set([1, 3, 5, 7, 8]):         # <- if, it's an upsample layer, we must upsample  
+                x  = self._upsample(x) # TODO: MIGHT APPLY A CONV LAYER HERE
+            
+            if idx in self.skip_decoder_indices:      # <- it's a skip connections
+                skip = self.skip_connections.pop()
+                # if len(self.skip_connections) == 1:              # <- We do not fuse heatmap, if it's the last element (P1 in YOLOv12)
+                #     print(skip.size(), x.size())
+                #     x = torch.cat([skip, x], dim=1).to("cuda")  
+                #     x = self._eca(x)
+                #     size = x.size()[1]
+                #     x = Conv(
+                #         c1=x.size()[1],
+                #         c2=size, 
+                #         k=3).to("cuda")(x) 
+                # else: 
 
+                if heatmaps: 
+                    heatmap = heatmaps.pop()
+                    fusion = nn.Conv2d(
+                                in_channels = heatmap.size()[1],
+                                out_channels = skip.size()[1], 
+                                kernel_size = 1, 
+                                ).to("cuda")
+                    gate = self._sigmoid(fusion(heatmap))
+                    skip = skip * (1.0 + nn.Parameter(torch.tensor(1.0)).to("cuda") * gate) # Fused the heatmap (learnable gating) with skips
+                    size = x.size()[1]
 
+                # print("Comparison Point")
+                # print(skip.size(), x.size())
+                # print("Decoder Before", x.size(), skip.size())
+                size = x.size()[1]
+                x = torch.cat([skip, x], dim=1).to("cuda")  
+                x = self._eca(x)
+                x = Conv(
+                    c1=x.size()[1],
+                    c2=size, 
+                    k=3).to("cuda")(x)
+                # print("Decoder Before", x.size())    
 
+            # print("Decoder Before", x.size())
+            x = module(x)
+            print("Decoder After", x.size())
 
-
-
-#         # Convert .children() -> generator to list 
-#         children = list(self.decoder.children())
-#         children = children[:-1]
-# 
-#         for i, layer in enumerate(children):
-#             layer.to("cuda")
-# 
-#             if i in self.skip_decoder_indices: 
-#                 # print(len(self.skip_connections))
-#                 a = self.skip_connections.pop()
-#                 x = self._create_concat_block(a, x)
-# 
-#             x = layer(x)
-# 
-#         # Last layer of the Decoder
-#         x = self.last_conv(x)
-# 
-#         self.activation_cache.clear()
-#         self.skip_connections.clear()
-#         return yolo_x, x
+        x = self.last_conv( self._upsample(x) )
+        print("Last Conv After", x.size())
+            
+        # Last layer of the Decoder
+        return x
 
     def _reverse_module_channels(self, module: nn.Module) -> nn.Module:
         """
@@ -325,19 +354,11 @@ class YOLOUSegPlusPlus(Module):
         """
 
         if isinstance(module, Conv):
-            return Sequential(
-                Upsample(
-                    scale_factor = 2, 
-                    mode = "bilinear", 
-                    align_corners = True
-                    ), 
-                Conv(
-                    c1=module.conv.out_channels, 
-                    c2=module.conv.in_channels,
-                    k=module.conv.kernel_size, 
-                    p=module.conv.padding
-                    )
-                )
+            return Conv(
+                c1=module.conv.out_channels, 
+                c2=module.conv.in_channels,
+                k=module.conv.kernel_size, 
+                p=module.conv.padding)
             
         elif isinstance(module, A2C2f):
             return A2C2f(
@@ -392,3 +413,4 @@ class YOLOUSegPlusPlus(Module):
         """
         for name, module in self.encoder.named_modules(): 
             print(f"\n{name}")
+

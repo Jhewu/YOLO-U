@@ -52,4 +52,4 @@ class SpatialTransformer(nn.Module):
             align_corners=False
         )
 
-        return transformed, theta
+        return transformed #, theta

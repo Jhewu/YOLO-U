@@ -385,10 +385,15 @@ if __name__ == "__main__":
     # Create YOLOU instance
     model = YOLOUSegPlusPlus(predictor=YOLO_predictor).to("cuda")
 
-    x = torch.ones(1, 4, 160, 160).to("cuda")
-    model.forward(x, x)
-
+    # model.check_encoder_decoder_symmetry()
     
+    x = torch.ones(1, 4, 160, 160).to("cuda")
+    heatmaps = [torch.ones(1, 1, 20, 20).to("cuda"), torch.ones(1, 1, 10, 10).to("cuda"),]
+    model.forward(x, heatmaps)
+
+    # torch.Size([1, 64, 20, 20])
+    # torch.Size([1, 128, 10, 10])
+    # torch.Size([1, 32, 40, 40])
 
 
     """
