@@ -1,4 +1,4 @@
-from torch.nn import Sequential, Module, Upsample
+from torch.nn import Sequential, Module, Upsample, Sigmoid
 from torch import nn
 import torch
 
@@ -24,7 +24,7 @@ class YOLOUSegPlusPlus(Module):
                  verbose: bool = False,
                  target_modules_indices: List[int] = [2, 4, 6]): 
         """
-        TODO: UPDATE THE DOCUMENTATION
+        WARNING: DOCUMENTATION NOT UPDATED
         
         Creates a YOLOU-Seg++ Network with Pretrained YOLOv12 (detection) model
         Main Idea: Using YOLOv12 bbox as guidance in UNet skip connections and recycling YOLOv12 backbone as the encoder
@@ -34,20 +34,10 @@ class YOLOUSegPlusPlus(Module):
             target_modules_indices (list [int]): list of indices to add skip connections (in YOLOv12-Seg every downsample)
 
         Attributes: 
-            yolo_trainer (CustomSegmentationTrainer): Custom YOLO segmentation trainer instance
             yolo_predictor (CustomSegmentationTrainer): Custom YOLO segmentation predictor instance  
-            _yolo_seq (nn.Sequential): YOLOv12-Seg model backbone sequence
             encoder (nn.Sequential): Encoder portion extracted from YOLOv12-Seg backbone (first 9 layers)
             decoder (nn.Sequential): Decoder portion constructed from encoder modules
-            bottleneck1 (nn.Sequential): First bottleneck layer with BottleneckCSP block
-            bottleneck2 (nn.Sequential): Second bottleneck layer with BottleneckCSP block
-            stn (SpatialTransformer or None): Spatial Transformer Network for affine transformation
-            eca (ECA or None): ECA attention module for feature enhancement
-            last_conv (ConvTranspose): Final transposed convolution for output reconstruction
-            skip_encoder_indices (set): Set of encoder indices for skip connection targeting
-            skip_decoder_indices (set): Set of decoder indices corresponding to skip connections
-            skip_connections (list): Cache for storing skip connection features during forward pass
-            activation_cache (list): Cache for storing intermediate activations during forward pass
+            bottleneck (nn.Sequential): First bottleneck layer with BottleneckCSP block
 
         Methods: 
             _hook_fn: Forward hook function for caching activations (mainly used for YOLOv12-Seg forward pass)
@@ -55,66 +45,111 @@ class YOLOUSegPlusPlus(Module):
             _create_concat_block: Creates concatenation blocks for skip connections
             YOLO_forward: Performs YOLOv12-Seg forward pass to generate initial masks
             _STN_forward: Applies spatial transformer network for affine transformation
-            _concat_masks_forward: Concatenates masks with feature maps using ECA attention
             forward: Main forward pass implementation
             _reverse_module_channels: Converts encoder modules to decoder-compatible modules
             _construct_decoder_from_encoder: Builds decoder from encoder modules
             check_encoder_decoder_symmetry: Utility method to verify encoder-decoder symmetry
             print_yolo_named_modules: Debug utility to print all YOLO modules
 
-        Methods: 
-        
-        TODO: Might reduce target module indices for efficiency
+        -------------------------------------------------------------------------------------------------------------
+        YOLOv12 backbone
+        -------------------------------------------------------------------------------------------------------------
+                                   from  n    params  module                                       arguments
+          0                  -1  1       608  ultralytics.nn.modules.conv.Conv             [4, 16, 3, 2]
+          1                  -1  1      4672  ultralytics.nn.modules.conv.Conv             [16, 32, 3, 2]
+          2                  -1  1      6640  ultralytics.nn.modules.block.C3k2            [32, 64, 1, False, 0.25]
+          3                  -1  1     36992  ultralytics.nn.modules.conv.Conv             [64, 64, 3, 2]
+          4                  -1  1     26080  ultralytics.nn.modules.block.C3k2            [64, 128, 1, False, 0.25]
+          5                  -1  1    147712  ultralytics.nn.modules.conv.Conv             [128, 128, 3, 2]
+          6                  -1  2    180864  ultralytics.nn.modules.block.A2C2f           [128, 128, 2, True, 4]
+          7                  -1  1    295424  ultralytics.nn.modules.conv.Conv             [128, 256, 3, 2]
+          8                  -1  2    689408  ultralytics.nn.modules.block.A2C2f           [256, 256, 2, True, 1]
+        -------------------------------------------------------------------------------------------------------------
+    
         """
+        ### TODO
+        ## (1) Make the individual modules declaration adaptive
+        ## (2) Use iter() instead of indices, which might be prone to breaking
+        ## (3) Update Documentation
+        ## (4) Implement Inference Step
+        ## (5) Clean up Methods
 
         super().__init__()
         ### YOLO12 (detect) Section
         self.yolo_predictor = predictor # for inference
 
         ### YOLOU-Seg++ Modules Section
-        self.encoder = predictor.model.model.model[0:9] # <- obtain sequential modules from 0-8 for training
+        self.encoder = predictor.model.model.model[0:9] # <- Obtain sequential modules from 0-8 for training
         self.bottleneck = Sequential(        
-                SpatialTransformer(in_channels=self.encoder[-1].cv2.conv.out_channels).to("cuda"), # <- learns geometric transformation, to correct encoder features, theta is for troubleshooting
-                ECA().to("cuda"), # <- weights the channels
+                SpatialTransformer(in_channels=self.encoder[-1].cv2.conv.out_channels), # <- Learns geometric transformation, to correct encoder features
+                ECA(), # <- weights the channels
                 BottleneckCSP(c1=256, 
                               c2=256, 
                               n=2, 
                               shortcut=True, 
                               g=1,
-                              e=0.5).to("cuda")
-                )
-        self.decoder = self._construct_decoder_from_encoder()
-        self._upsample = Upsample(
-                    scale_factor = 2, 
-                    mode = "bilinear", 
-                    align_corners = True
-                    )
-        self._sigmoid = nn.Sigmoid()
-        self._eca = ECA()
+                              e=0.5))
+        self.decoder = self._construct_decoder_from_encoder()[:-1] # <- Skip the last conv layer, to output binary masks
         self.last_conv = Conv(
                 c1=16, 
                 c2=1,
                 k=3
                 )
                 
+        ### YOLOU-Seg++ Helper (Separate Modules Used in forward() in Decoder)
+        self._upsample = Upsample(scale_factor = 2, mode = "bilinear", align_corners = True)
+        self._sigmoid = Sigmoid()
+        self._ecas = nn.ModuleList( [ECA() for i in range( len(target_modules_indices ) )] )
+        self._heatmap_params = nn.ParameterList( [nn.Parameter(torch.tensor(1.0)) for i in range( len(target_modules_indices) - 1)] )
+        self._heatmap_proj = nn.ModuleList([
+            nn.Conv2d(
+                in_channels = 1,
+                out_channels = 128, 
+                kernel_size = 1) 
+                for i in range(2)])
+        self._concat_proj = nn.ModuleList([ 
+            nn.Conv2d(
+                in_channels = 128*2,
+                out_channels = 128, 
+                kernel_size = 1),   # <- A2C2F (Module 6 in YOLO Backbone)
+            nn.Conv2d(
+                in_channels = 128*2,
+                out_channels = 128, 
+                kernel_size = 1),   # <- C3k2 (Module 4 in YOLO Backbone)
+            nn.Conv2d(
+                in_channels = 64*2,
+                out_channels = 64, 
+                kernel_size = 1)])  # <- C3k2 (Module 2 in YOLO Backbone)
+        self._residual_proj = nn.ModuleList([
+            nn.Conv2d(
+                in_channels = 64*2,
+                out_channels = 64, 
+                kernel_size = 1), 
+            nn.Conv2d(
+                in_channels = 32*2, 
+                out_channels = 32, 
+                kernel_size = 1),      
+        ])
+        
         ### Miscellaneous Section
         self.verbose = verbose
-        self.skip_encoder_indices = set(target_modules_indices)
-        self.skip_decoder_indices = set([abs(target_modules_indices[-1] - item + 1) # ---> Reverses and normalizes the indices
-                                             for item in target_modules_indices[::-1]])
-
-        print(self.skip_encoder_indices)
-        # print(self.skip_decoder_indices)
-        self.skip_decoder_indices = set([2, 4, 6])
-                                            
         self.skip_connections = []
+        self._indices = {
+                "upsample": set([1, 3, 5, 7, 8]), 
+                "skip_connections_encoder": set(target_modules_indices), 
+                "skip_connections_decoder": set([2, 4, 6]), 
+                "eca":0, "heatmap_param": 0, "heatmap_proj": 0, "concat_proj": 0, "residual_proj": 0} 
+        
+        ### TODO: IMPLEMENT THIS DYNAMIC DECODER INDICES LATER
+        # self.skip_decoder_indices = set([abs(target_modules_indices[-1] - item + 1) # ---> Reverses and normalizes the indices
+                                             # for item in target_modules_indices[::-1]])
+        
         if torch.cuda.is_available():
-            print(f"\nCUDA {torch.cuda.get_device_name(0)} is available, forwarding YOLOv12 backbone twice is faster than forward hooks...\n")            
+            print(f"\nATTENTION: CUDA {torch.cuda.get_device_name(0)} is available, forwarding YOLOv12 backbone twice is faster than forward hooks...\n")            
         else: 
-            print(f"\nCUDA is not available (CPU), using forward hooks to save on compute...\n")
+            print(f"\nATTENTION: CUDA is not available (CPU), using forward hooks to save on compute...\n")
             self.activation_cache = []
-            self._assign_hooks()            
-            self.activation_cache.clear()
+            self._assign_hooks()    
 
     def _hook_fn(self, module, input, output):
         """
@@ -227,6 +262,11 @@ class YOLOUSegPlusPlus(Module):
         return self.eca(concat)
 
     def inference(self): 
+        """
+        TODO: IMPLEMENT INFERENCE WITH FORWARD HOOKS
+        """
+
+    
         #         # decoder
         # # COMMENT: for some reason self.yolo_predictor(x) triggers forward hooks twice, therefore
         # #          take the middle and +1, because we popped at YOLO_forward()
@@ -239,6 +279,15 @@ class YOLOUSegPlusPlus(Module):
 
 
         return
+    def _reset_indices(self) -> None: 
+        """
+        Resets the indices used to keep track of the independent modules found in the Decoder section
+        """
+        self._indices["eca"]           = 0
+        self._indices["heatmap_param"] = 0
+        self._indices["heatmap_proj"]  = 0   
+        self._indices["concat_proj"]   = 0
+        self._indices["residual_proj"] = 0
 
     def forward(self, x: torch.tensor, heatmaps: List[torch.tensor]) -> torch.tensor: 
         """
@@ -254,54 +303,49 @@ class YOLOUSegPlusPlus(Module):
 
         TODO: Implement Residual Connections for the non-YOLO Layers
         """
+        # Reset each forward()
+        self.skip_connections = []            
+        self._reset_indices()
+
         # Encoder (frozen)
-        self.skip_connections = []                  # <- Reset at each forward
         with torch.no_grad(): 
             for idx, module in enumerate(self.encoder): 
-                module.to("cuda")
-                x = module(x)           
-                if idx in self.skip_encoder_indices: 
-                    self.skip_connections.append(x) # <- Manually cache tensors for skips
+                x = module(x)  
+                if idx in self._indices.get("skip_connections_encoder"):
+                    self.skip_connections.append(x)                                 # <- Manually cache tensors for skips
 
         # Bottleneck (trainable)
         x = self.bottleneck(x)    
 
         # Decoder (trainable)
-        children = list(self.decoder.children())        # <- Convert .children() (generator type) -> list         
-        for idx, module in enumerate(children[:-1]):    # <- Remove last Conv, because last Conv must be 1-channel (binary mask)
-            module.to("cuda")
-            if idx in set([1, 3, 5, 7, 8]):             # <- Upsampling
-                x  = self._upsample(x) 
-
-            if idx in self.skip_decoder_indices:        # <- If it's a skip connections
-                skip = self.skip_connections.pop()
-                size = x.size()[1]                      # <- Save the initial size (to transform back)
-                if heatmaps:                            # <- If there are heatmaps, we fuse the heatmap (learnable gating) with skips
+        for idx, module in enumerate(self.decoder):                                 # <- Remove last Conv, because last Conv must be 1-channel (binary mask)
+            if idx in self._indices.get("upsample"): x = self._upsample(x) 
+            if idx in self._indices.get("skip_connections_decoder"):            
+                skip, size = self.skip_connections.pop(), x.size()[1]
+                if heatmaps:                                                        # <- If there are heatmaps, we fuse the heatmap (learnable gating) with skips
                     heatmap = heatmaps.pop()
-                    fusion = nn.Conv2d(
-                                in_channels = heatmap.size()[1],
-                                out_channels = skip.size()[1], 
-                                kernel_size = 1, 
-                                ).to("cuda")
+                    fusion = self._heatmap_proj[ self._indices.get("heatmap_proj") ]  # <- Get fusion module
+                    self._indices["heatmap_proj"]+=1                                 # <- Increase idx
+                            
                     gate = self._sigmoid(fusion(heatmap))
-                    skip = skip * (1.0 + nn.Parameter(torch.tensor(1.0)).to("cuda") * gate) 
-                    
-                x = torch.cat([skip, x], dim=1).to("cuda")  # <- Concatenate
-                x = self._eca(x)                            # <- Re-weight the Concat channels
-                x = Conv(
-                    c1=x.size()[1],
-                    c2=size, 
-                    k=3).to("cuda")(x)                      # <- Recast channels to size
+                    skip = skip * (1.0 + self._heatmap_params[self._indices.get("heatmap_param")] * gate) 
+                    self._indices["heatmap_param"]+=1                         # <- Increase idx
 
-            if idx not in set([1, 3, 5, 7, 8]): # <- If non-upsampling blocks (YOLO Modules), add residual (better gradient flow)
+                x = torch.cat([skip, x], dim=1)                 # <- Concatenate
+                x = self._ecas[ self._indices.get("eca") ](x)   # <- Re-weight the Concat channels
+                self._indices["eca"]+=1    
+
+                x = self._concat_proj[ self._indices.get("concat_proj") ](x)
+                self._indices["concat_proj"]+=1
+
+            if idx not in self._indices.get("upsample"): # <- If non-upsampling blocks (YOLO Modules), add residual (better gradient flow)
                 residual = x.clone() 
                 x = module(x)
                 if x.shape == residual.shape: 
                     x = x + residual
                 else: 
-                    proj = nn.Conv2d(in_channels=residual.size(1),
-                                    out_channels=x.size(1), 
-                                    kernel_size=1).to(x.device)
+                    proj = self._residual_proj[ self._indices.get("residual_proj") ]
+                    self._indices["residual_proj"]+=1
                     x = x + proj(residual)
             else: x = module(x)
 

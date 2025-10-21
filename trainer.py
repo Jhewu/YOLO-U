@@ -389,7 +389,11 @@ if __name__ == "__main__":
     
     x = torch.ones(1, 4, 160, 160).to("cuda")
     heatmaps = [torch.ones(1, 1, 20, 20).to("cuda"), torch.ones(1, 1, 10, 10).to("cuda"),]
-    model.forward(x, heatmaps)
+    x = model.forward(x, heatmaps)
+
+    print(x.size())
+# 
+#     print(x.size())
 
     # torch.Size([1, 64, 20, 20])
     # torch.Size([1, 128, 10, 10])
