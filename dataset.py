@@ -23,8 +23,6 @@ class CustomDataset(Dataset):
         Args: 
             root_path (str): root path of the dataset directory (e.g., stacked_segmentation)
             image_size (str): 
-
-
         """
                     
         self.root_path = root_path
@@ -56,10 +54,9 @@ class CustomDataset(Dataset):
             heatmap = Image.open(self.heatmaps[index]).convert("L")
             
             heatmap_tensors = []
-            for size in heatmap_sizes: 
-                heatmap_tensor = transforms.ToTensor(
-                    transforms.Resize((size, size))(heatmap)
-                    )
+            for size in self.heatmap_sizes: 
+                heatmap_tensor = transforms.Resize((size, size))(heatmap)
+                heatmap_tensor = transforms.ToTensor()(heatmap_tensor)
 
                 # Heatmap normalization
                 mean, std  = heatmap_tensor.mean(), heatmap_tensor.std()

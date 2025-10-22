@@ -80,9 +80,24 @@ class YOLOUSegPlusPlus(Module):
 
         ### YOLOU-Seg++ Modules Section
         self.encoder = predictor.model.model.model[0:9] # <- Obtain sequential modules from 0-8 for training
+
+        ### ENABLE GRADIENTS FOR ENCODER PARAMETERS
+        for param in self.encoder.parameters(): 
+            param.requires_grad = False
+        self.encoder.eval()
+
+        ### TO ENSURE THE ENCODER IS REGISTERED UNDER THIS CUSTOM TORCH MODEL/MODULE
+        # self.encoder = nn.ModuleList()
+        # for layer in self.encoder_layers: 
+        #     self.encoder.append(layer)
+        
+        ### FREEZE
+        # for param in self.encoder.parameters(): 
+        #     param.requires_grad = False
+            
         self.bottleneck = Sequential(        
-                SpatialTransformer(in_channels=self.encoder[-1].cv2.conv.out_channels), # <- Learns geometric transformation, to correct encoder features
-                ECA(), # <- weights the channels
+                # SpatialTransformer(in_channels=self.encoder[-1].cv2.conv.out_channels), # <- Learns geometric transformation, to correct encoder features
+                # ECA(), # <- weights the channels
                 BottleneckCSP(c1=256, 
                               c2=256, 
                               n=2, 
@@ -90,6 +105,7 @@ class YOLOUSegPlusPlus(Module):
                               g=1,
                               e=0.5))
         self.decoder = self._construct_decoder_from_encoder()[:-1] # <- Skip the last conv layer, to output binary masks
+
         self.last_conv = Conv(
                 c1=16, 
                 c2=1,
@@ -185,46 +201,46 @@ class YOLOUSegPlusPlus(Module):
         if not found:
             raise ValueError(f"Modules not found in YOLO")
 
-    def _create_concat_block(self, skip: torch.tensor, x: torch.tensor) -> torch.tensor:
-        """
-        Creates encoder-to-decoder concat blocks during the decoder step in forward()
+#     def _create_concat_block(self, skip: torch.tensor, x: torch.tensor) -> torch.tensor:
+#         """
+#         Creates encoder-to-decoder concat blocks during the decoder step in forward()
+# 
+#         Args:
+#             skip (torch.tensor): Encoder skip tensor
+#             x    (torch.tensor): Decoder x tensor from bottleneck
+# 
+#         Returns:
+#             (torch.tensor): concated tensor of size [B, skip_C + x_C, H, W]
+#         """
+#         conv = Conv(
+#             c1=skip.size(1)+x.size(1), 
+#             c2=skip.size(1), 
+#             k=1, 
+#             s=1).to(x.device)
+#         return conv(torch.cat([skip, x], dim=1))
 
-        Args:
-            skip (torch.tensor): Encoder skip tensor
-            x    (torch.tensor): Decoder x tensor from bottleneck
-
-        Returns:
-            (torch.tensor): concated tensor of size [B, skip_C + x_C, H, W]
-        """
-        conv = Conv(
-            c1=skip.size(1)+x.size(1), 
-            c2=skip.size(1), 
-            k=1, 
-            s=1).to(x.device)
-        return conv(torch.cat([skip, x], dim=1))
-
-    def YOLO_forward(self, x: torch.tensor) -> torch.tensor: 
-        """
-        YOLOv12-Seg Forward() used at first step of YOLOU
-
-        Args:
-            x (torch.tensor): Input tensor.
-
-        Returns:
-            (torch.tensor): YOLOv12 bbox in batches
-            (torch.tensor): cached backbone output (defined in _assign_hook)
-        """
-
-        with torch.no_grad():
-            results = self.yolo_predictor(x)
-
-        # Sums the boxes and stack it
-        box_batch = torch.zeros( (len(results), 1, *results[0].orig_shape), device='cuda') # [B, C, H, W]
-        for i, result in enumerate(results):
-            if result.boxes:
-                box_batch[i] = torch.sum(result.boxes, dim=0).unsqueeze(0)
-
-        return mask_batch, self.activation_cache.pop()
+#     def YOLO_forward(self, x: torch.tensor) -> torch.tensor: 
+#         """
+#         YOLOv12-Seg Forward() used at first step of YOLOU
+# 
+#         Args:
+#             x (torch.tensor): Input tensor.
+# 
+#         Returns:
+#             (torch.tensor): YOLOv12 bbox in batches
+#             (torch.tensor): cached backbone output (defined in _assign_hook)
+#         """
+# 
+#         with torch.no_grad():
+#             results = self.yolo_predictor(x)
+# 
+#         # Sums the boxes and stack it
+#         box_batch = torch.zeros( (len(results), 1, *results[0].orig_shape), device='cuda') # [B, C, H, W]
+#         for i, result in enumerate(results):
+#             if result.boxes:
+#                 box_batch[i] = torch.sum(result.boxes, dim=0).unsqueeze(0)
+# 
+#         return mask_batch, self.activation_cache.pop()
     
     def _STN_forward(self, x: torch.tensor) -> torch.tensor: 
         """
@@ -307,47 +323,55 @@ class YOLOUSegPlusPlus(Module):
         self.skip_connections = []            
         self._reset_indices()
 
-        # Encoder (frozen)
-        with torch.no_grad(): 
-            for idx, module in enumerate(self.encoder): 
-                x = module(x)  
-                if idx in self._indices.get("skip_connections_encoder"):
-                    self.skip_connections.append(x)                                 # <- Manually cache tensors for skips
+        # Encoder (weights frozen in training loop)   
+        for idx, module in enumerate(self.encoder):   
+            x = module(x)  
+            if idx in self._indices.get("skip_connections_encoder"):
+                self.skip_connections.append(x)                                 # <- Manually cache tensors for skips
+        # print("encoder out mean/std:", x.mean().item(), x.std().item())
+
+        # print("X", x.requires_grad)
+        # for skip in self.skip_connections: 
+        #     print("Skips", skip.requires_grad)
 
         # Bottleneck (trainable)
-        x = self.bottleneck(x)    
+        x = self.bottleneck(x)   
 
         # Decoder (trainable)
         for idx, module in enumerate(self.decoder):                                 # <- Remove last Conv, because last Conv must be 1-channel (binary mask)
             if idx in self._indices.get("upsample"): x = self._upsample(x) 
-            if idx in self._indices.get("skip_connections_decoder"):            
-                skip, size = self.skip_connections.pop(), x.size()[1]
-                if heatmaps:                                                        # <- If there are heatmaps, we fuse the heatmap (learnable gating) with skips
-                    heatmap = heatmaps.pop()
-                    fusion = self._heatmap_proj[ self._indices.get("heatmap_proj") ]  # <- Get fusion module
-                    self._indices["heatmap_proj"]+=1                                 # <- Increase idx
-                            
-                    gate = self._sigmoid(fusion(heatmap))
-                    skip = skip * (1.0 + self._heatmap_params[self._indices.get("heatmap_param")] * gate) 
-                    self._indices["heatmap_param"]+=1                         # <- Increase idx
+#             if idx in self._indices.get("skip_connections_decoder"):            
+#                 skip = self.skip_connections.pop()
+# 
+#                 ### HEATMAPS COMMENTED OUT FOR NOW, TO TEST BASIC FUNCTIONALITY
+#                 # if heatmaps:                                                        # <- If there are heatmaps, we fuse the heatmap (learnable gating) with skips
+#                 #     heatmap = heatmaps.pop()
+#                 #     fusion = self._heatmap_proj[ self._indices.get("heatmap_proj") ]  # <- Get fusion module
+#                 #     self._indices["heatmap_proj"]+=1                                 # <- Increase idx
+#                 #             
+#                 #     gate = self._sigmoid(fusion(heatmap))
+#                 #     skip = skip * (1.0 + self._heatmap_params[self._indices.get("heatmap_param")] * gate) 
+#                 #     self._indices["heatmap_param"]+=1                         # <- Increase idx
+#                 # print("skip mean/std:", skip.mean().item(), skip.std().item())
+#                 # print("x (decoder incoming) mean/std:", x.mean().item(), x.std().item())
+#                 x = torch.cat([skip, x], dim=1)                 # <- Concatenate
+#                 x = self._ecas[ self._indices.get("eca") ](x)   # <- Re-weight the Concat channels
+#                 self._indices["eca"]+=1    
+# 
+#                 x = self._concat_proj[ self._indices.get("concat_proj") ](x)
+#                 self._indices["concat_proj"]+=1
 
-                x = torch.cat([skip, x], dim=1)                 # <- Concatenate
-                x = self._ecas[ self._indices.get("eca") ](x)   # <- Re-weight the Concat channels
-                self._indices["eca"]+=1    
-
-                x = self._concat_proj[ self._indices.get("concat_proj") ](x)
-                self._indices["concat_proj"]+=1
-
-            if idx not in self._indices.get("upsample"): # <- If non-upsampling blocks (YOLO Modules), add residual (better gradient flow)
-                residual = x.clone() 
-                x = module(x)
-                if x.shape == residual.shape: 
-                    x = x + residual
-                else: 
-                    proj = self._residual_proj[ self._indices.get("residual_proj") ]
-                    self._indices["residual_proj"]+=1
-                    x = x + proj(residual)
-            else: x = module(x)
+            # if idx not in self._indices.get("upsample"): # <- If non-upsampling blocks (YOLO Modules), add residual (better gradient flow)
+            #     residual = x.clone() 
+            #     x = module(x)
+            #     if x.shape == residual.shape: 
+            #         x = x + residual
+            #     else: 
+            #         proj = self._residual_proj[ self._indices.get("residual_proj") ]
+            #         self._indices["residual_proj"]+=1
+            #         x = x + proj(residual)
+            # else: 
+            x = module(x)
 
         # Output (trainable)
         x = self.last_conv( self._upsample(x) )

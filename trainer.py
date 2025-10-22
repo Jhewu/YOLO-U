@@ -1,14 +1,9 @@
 from modules.YOLOUSegPlusPlus import YOLOUSegPlusPlus
-from custom_yolo_predictor.custom_detseg_predictor import CustomSegmentationPredictor, process_mask
-from custom_yolo_trainer.custom_trainer import CustomSegmentationTrainer
-
+from custom_yolo_predictor.custom_detseg_predictor import CustomSegmentationPredictor
 from dataset import CustomDataset
-from loss import dice_metric, dice_loss
-from loss import YOLOULoss 
 
 import os
 import time
-from copy import deepcopy
 from typing import Tuple, List
 from itertools import cycle
 
@@ -21,11 +16,12 @@ from torchinfo import summary
 from tqdm import tqdm
 import pandas as pd
 import matplotlib.pyplot as plt
+from monai.losses import DiceLoss
+from monai.metrics import DiceMetric
 
 class Trainer: 
     def __init__(self,
                 model: YOLOUSegPlusPlus,
-                yolo: CustomSegmentationPredictor,
                 data_path: str, 
                 model_path: str = None,
                 device: str = "cuda",
@@ -90,12 +86,26 @@ class Trainer:
         """
     
         self.model = model
-        self.yolo = yolo
         self.device = device
         self.data_path = data_path
         self.model_path = model_path
                 
-        self.loss = YOLOULoss()  
+        self.loss = DiceLoss(
+            include_background = False, # single class
+            to_onehot_y = False,        # single class
+            sigmoid=True, 
+            soft_label = True,          # should improve convergence    
+            batch = True,               # should improve stability during training
+            reduction="mean")
+
+        self.metric = DiceMetric(
+            include_background = False, 
+            reduction="mean_batch",     
+            get_not_nans = False, 
+            ignore_empty = False, 
+            num_classes = 2,            # 2 stands for [0, 1], technically single class
+            return_with_label = False
+        )
 
         self.image_size = image_size
         self.batch_size = batch_size
@@ -116,29 +126,30 @@ class Trainer:
         """
         Get current time in YMD | HMS format
         Used for creating non-conflicting result dirs
+        Returns
+            (str) Time in Ymd | HMs format
         """
         current_time = time.localtime()
         return time.strftime("%Y_%m_%d_%H_%M_%S", current_time)
 
-    def create_dir(self, folder_name: str):
+    def create_dir(self, directory: str):
         """
         Creates the given directory if it does not exists
+        Args: 
+            directory (str): directory to be created
         """
-        if not os.path.exists(folder_name):
-            os.makedirs(folder_name) 
+        if not os.path.exists(directory):
+            os.makedirs(directory) 
 
     def plot_loss_curves(self, save_path: str, filename: str = "plot.png") -> None:
         """
-        Plot every metric stored in ``self.history``.
+        Plot every metric stored in 'self.history'.
         The method automatically discovers keys, assigns a colour, and
         draws a legend entry for each.
 
         Parameters
-        ----------
-        save_path : str
-            Directory to which the plot PNG will be written.
-        filename : str, default "plot.png"
-            File name for the saved image.
+            save_path (str): Directory to which the plot PNG will be written.
+            filename (str):  File name for the saved image (Default "plot.png")
         """
         if not hasattr(self, "history") or not isinstance(self.history, dict):
             raise ValueError("`self.history` must be a dict of metric lists")
@@ -174,7 +185,7 @@ class Trainer:
             
     def create_dataloader(self, data_path: str) -> Tuple[DataLoader, DataLoader]: 
         """
-        Create dataloader from custom SegmentationDataset
+        Create dataloader from CustomDataset
         Depends on SegmentationDataset
 
         Args:
@@ -183,85 +194,126 @@ class Trainer:
         Returns:
             (Tuple[Dataloader]): train_dataloader and val_dataloader
         """
-        train_dataset = SegmentationDataset(data_path, "images/train", "masks/train", self.image_size)
-        val_dataset = SegmentationDataset(data_path, "images/test", "masks/test", self.image_size)
+        train_dataset = CustomDataset(
+                            root_path = data_path, 
+                            image_path = "images/train", 
+                            heatmap_path = "heatmap/train", 
+                            mask_path = "masks/train",
+                            image_size = self.image_size, 
+                            heatmap_sizes = [20, 10])
+                            
+        val_dataset = CustomDataset(
+                            root_path = data_path, 
+                            image_path = "images/val", 
+                            heatmap_path = "heatmap/val",
+                            mask_path = "masks/val", 
+                            image_size = self.image_size, 
+                            heatmap_sizes = [20, 10])
 
         train_dataloader = DataLoader(dataset=train_dataset,
                                     batch_size=self.batch_size,
-                                    shuffle=True)
+                                    shuffle=False)
+                                    
         val_dataloader = DataLoader(dataset=val_dataset,
                                     batch_size=self.batch_size,
-                                    shuffle=True)
-
+                                    shuffle=False) # <- do not shuffle
+                                    
         return train_dataloader, val_dataloader
+
     
     def train(self) -> None: 
         """
-        Trains YOLOU model
+        Trains YOLOU-Seg++ model
 
-        TODO: Add description of everything this method does
+        TODO: ADD DESCRIPTION LATER
         """
+
+        # Add model to device
+        self.model.to(self.device)  
+        self.model.train()
+
+        # Creates the dataloader
         train_dataloader, val_dataloader = self.create_dataloader(data_path=self.data_path)
 
-        optimizer = optim.AdamW(self.model.parameters(), lr=self.lr)
+        # Model training config
+        trainable_param = (
+            param
+            for name, param in self.model.named_parameters()
+            if not name.startswith("encoder.")
+        )
+        trainable_name = (
+            name
+            for name, param in self.model.named_parameters()
+            if not name.startswith("encoder.")
+        )
+
+        ### COMBINING BOTH (NO FREEZING) BUT FORCING ENCODER TO PARAM
+        # encoder_params = []
+        # for layer in self.model.encoder:
+        #     encoder_params += list(layer.parameters())
+        # optimizer = torch.optim.Adam(encoder_params + list(self.model.bottleneck.parameters()) + list(self.model.decoder.parameters()), lr=1e-3)
+
+        # for name in trainable_name:
+        #     print(f"{name}")
+
+        ### ORIGINAL NO FREEZING DONE
+        optimizer = optim.AdamW(trainable_param, lr=self.lr)
+
+        ### ORIGINAL CONFIG WITH FREEZE, ONLY ADD GRADS TO BOTTLENECK AND DECODER, NOT ENCODER
+        # optimizer = torch.optim.Adam(
+        #     filter(lambda p: p.requires_grad, self.model.parameters()),
+        #     lr=1e-4
+        # )
         
-        if self.load_and_train: 
-            self.model.load_state_dict(torch.load(self.model_path, map_location=torch.device("cuda")))    
-            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.3, patience=int(self.patience * 0.5), verbose=True)
-        else: 
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs)
-
-        # summary(self.model, input_size=(self.batch_size, 4, self.image_size, self.image_size))
-
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs)
         scaler = GradScaler(self.device) # --> mixed precision
 
-        # initialize variables for callbacks
+        # Initialize variables for callbacks
         self.history = dict(train_loss=[], val_loss=[], train_dice_metric=[], val_dice_metric=[])
         best_val_loss = float("inf")
 
-        # create result directory
+        # Create result directory
         dest_dir = f"runs/{self.get_current_time()}" 
         model_dir = os.path.join(dest_dir, "weights")
         self.create_dir(model_dir)
 
+        # Add seed for reproducibility
+        torch.manual_seed(42)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(42)
+
         patience = 0 # --> local patience for early stopping
-
-        # YOLOU Custom Loss
-        combined_loss = self.loss
-
         for epoch in tqdm(range(self.epochs)):
-            # Training YOLOU Bottleneck and Decoder
-            # YOLOv12-Seg for Inference
-            model.train()
-            self.yolo.model.eval()
-
+            self.model.train()
+            self.metric.reset()
+        
             start_time = time.time()
             train_running_loss = 0
             train_running_dice_metric = 0
 
             if self.mixed_precision:
-                for idx, img_mask in enumerate(tqdm(train_dataloader)):
-                    with torch.amp.autocast(device_type=self.device): 
-                        img = img_mask[0].float().to(self.device)
-                        mask = img_mask[1].float().to(self.device)
-
-                        yolo_pred, yolou_pred = model.forward(img)
-                        loss = combined_loss(
-                                            preds=yolou_pred,
-                                            init_preds=yolo_pred,
-                                            targets=mask, 
-                                            sigmoid=True)
-            
-                        metric = dice_metric(yolou_pred, mask)
-
+                for idx, img_mask_heatmap in enumerate(tqdm(train_dataloader)):
+                    img = img_mask_heatmap[0].float().to(self.device)
+                    mask = img_mask_heatmap[1].float().to(self.device)
+                    heatmap = [heatmap.to(self.device) for heatmap in img_mask_heatmap[2]] # List of Tensors
                     optimizer.zero_grad()
+                    with torch.amp.autocast(device_type=self.device): 
+                        pred = self.model(img, heatmap)
+
+                    loss = self.loss(pred.float(), mask)
+                    if torch.isnan(loss):
+                        print("NaN loss detected!")
+                        print("Pred min/max:", pred.min().item(), pred.max().item())
+                        print("Mask min/max:", mask.min().item(), mask.max().item())
+                        break
+                    
                     scaler.scale(loss).backward()
 
                     # Unscales the gradients of optimizer's assigned params in-place
                     scaler.unscale_(optimizer)
 
                     # Since the gradients of optimizer's assigned params are unscaled, clips as usual:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
 
                     # Optimizer's gradients are already unscaled, so scaler.step does not unscale them,
                     #   although it still skips optimizer.step() if the gradients contain infs or NaNs.
@@ -270,59 +322,75 @@ class Trainer:
                     # Updates the scale for next iteration.
                     scaler.update()
 
+                    # Accumulate loss and metrics
                     train_running_loss += loss.item()
-                    train_running_dice_metric += metric.item()
+                    
+                    pred_sigmoid = torch.nn.functional.sigmoid(pred)
+                    pred_binary  = (pred_sigmoid > 0.5).float()
+                    self.metric(pred_binary, mask)
 
             else:
-                for idx, img_mask in enumerate(tqdm(train_dataloader)):
-                    img = img_mask[0].float().to(self.device)
-                    mask = img_mask[1].float().to(self.device)
-
-                    yolo_pred, yolou_pred = model.forward(img)
+                for idx, img_mask_heatmap in enumerate(tqdm(train_dataloader)):
+                    img = img_mask_heatmap[0].float().to(self.device)
+                    mask = img_mask_heatmap[1].float().to(self.device)
+                    heatmap = [heatmap.to(self.device) for heatmap in img_mask_heatmap[2]] # List of Tensors
+                    
                     optimizer.zero_grad()
-
-                    loss = combined_loss(
-                                        preds=yolou_pred,
-                                        init_preds=yolo_pred,
-                                        targets=mask, 
-                                        sigmoid=True)
-                    metric = dice_metric(yolou_pred, mask)
+                    pred = self.model(img, heatmap)
+                    loss = self.loss(pred, mask)
 
                     train_running_loss += loss.item()
-                    train_running_dice_metric += metric.item()
-                    
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    # for name, p in self.model.named_parameters():
+                    #     if ("bottleneck" in name) or ("decoder" in name):
+                    #         print(name, "grad norm:", None if p.grad is None else p.grad.norm().item())
+                    # from collections import defaultdict
+                    # grad_norms = defaultdict(float)
+                    # for name, p in self.model.named_parameters():
+                    #     if p.grad is None:
+                    #         continue
+                    #     # reduce name to module prefix
+                    #     prefix = name.split('.')[0]
+                    #     grad_norms[prefix] += p.grad.norm().item()  # L2 of param-subgrad contributions
+                    # 
+                    # for k, v in sorted(grad_norms.items(), key=lambda x: -x[1])[:30]:
+                    #     print(f"{k:30s} grad_norm_sum: {v:.6e}")
+                    torch.nn.utils.clip_grad_norm_(trainable_param, max_norm=1.0)
                     optimizer.step()
+
+                    # Update metrics
+                    pred_sigmoid = torch.nn.functional.sigmoid(pred)
+                    pred_binary  = (pred_sigmoid > 0.5).float()
+                    self.metric(pred_binary, mask)
 
             end_time = time.time()
             train_loss = train_running_loss / (idx + 1)
-            train_dice_metric = train_running_dice_metric / (idx + 1)
+            train_dice_metric = self.metric.aggregate().item()
+            self.metric.reset() # <- Reset again
 
-            model.eval()
+            self.model.eval()
             val_running_loss = 0
-            val_running_dice_metric = 0
-
             with torch.no_grad():
-                for idx, img_mask in enumerate(tqdm(val_dataloader)):
-                    img = img_mask[0].float().to(self.device)
-                    mask = img_mask[1].float().to(self.device)
+                for idx, img_mask_heatmap in enumerate(tqdm(val_dataloader)):
+                    img = img_mask_heatmap[0].float().to(self.device)
+                    mask = img_mask_heatmap[1].float().to(self.device)
+                    heatmap = [heatmap.to(self.device) for heatmap in img_mask_heatmap[2]] # List of Tensors
                     
-                    yolo_pred, yolou_pred = model.forward(img)
-                    loss = dice_loss(yolou_pred, mask)
-                    val_metric = dice_metric(yolou_pred, mask)
+                    pred = self.model(img, heatmap)
+                    loss = self.loss(pred, mask)
 
+                    # Accumulate Loss and Metrics
                     val_running_loss += loss.item()
-                    val_running_dice_metric += val_metric.item()
+                    pred_sigmoid = torch.nn.functional.sigmoid(pred)
+                    pred_binary  = (pred_sigmoid > 0.5).float()
+                    self.metric(pred_binary, mask)             
 
                 val_loss = val_running_loss / (idx + 1)
-                val_dice_metric = val_running_dice_metric / (idx + 1)
+                val_dice_metric = self.metric.aggregate().item()
             
-            # update the scheduler
-            if self.load_and_train:
-                scheduler.step(val_loss)
-            else: scheduler.step()
-
+            # Update the scheduler
+            scheduler.step()
+            
             # update the history
             self.history["train_loss"].append(train_loss)
             self.history["val_loss"].append(val_loss)
@@ -330,10 +398,10 @@ class Trainer:
             self.history["train_dice_metric"].append(train_dice_metric)
 
             if val_loss < best_val_loss: 
-                if (best_val_loss - val_loss) > 1e-3:
+                if (best_val_loss - val_loss) > 1e-2:
                     print(f"Validation loss improved from {best_val_loss:.4f} to {val_loss:.4f}. Saving model...")
                     best_val_loss = val_loss
-                    torch.save(model.state_dict(), os.path.join(os.path.join(model_dir, "best.pth")))
+                    torch.save(self.model.state_dict(), os.path.join(os.path.join(model_dir, "best.pth")))
                     patience = 0
                 else: 
                     print(f"Validation loss improved slightly from {best_val_loss:.4f} to {val_loss:.4f}, but not significantly enough to save the model.")
@@ -360,93 +428,53 @@ class Trainer:
                 print(f"\nEARLY STOPPING: Valid Loss did not improve since epoch {epoch+1-patience}, terminating training...")
                 break
 
-        torch.save(model.state_dict(), os.path.join(os.path.join(model_dir, "last.pth")))
+        torch.save(self.model.state_dict(), os.path.join(os.path.join(model_dir, "last.pth")))
         self.plot_loss_curves(save_path=dest_dir)
 
 if __name__ == "__main__": 
-    MODEL_DIR = "yolo_checkpoint/weights/best.pt"
-    DATA_PATH = "data/stacked_segmentation"
-
     # Create trainer and predictor instances
-    t_args = dict(model=MODEL_DIR,
+    p_args = dict(model="yolo_checkpoint/weights/best.pt",
                 data=f"data/data.yaml", 
                 verbose=True,
-                imgsz=160)
-    
-    p_args = deepcopy(t_args)
-    p_args["save"] = False      # --> Needs to be False for predictor
-                                #     Otherwise error
-                                
+                imgsz=160, 
+                save=False)
+
+    # Create predictor and Load checkpoint
     YOLO_predictor = CustomSegmentationPredictor(overrides=p_args)
-
-    # Load the model checkpoint
-    YOLO_predictor.setup_model(MODEL_DIR)
+    YOLO_predictor.setup_model(p_args["model"])
 
     # Create YOLOU instance
-    model = YOLOUSegPlusPlus(predictor=YOLO_predictor).to("cuda")
+    model = YOLOUSegPlusPlus(predictor=YOLO_predictor)
 
-    # model.check_encoder_decoder_symmetry()
+    # for name, param in model.named_parameters():
+    #     if param.requires_grad:
+    #         print(name, param.shape)
+            
+    trainer = Trainer(model=model, 
+                    data_path="data/stacked_segmentation", 
+                    model_path=None, 
+                    load_and_train=False,
+                    mixed_precision = False,
+                
+                    epochs=30,
+                    image_size = 160,
+                    batch_size = 64,
+                    lr = 1e-3,
+
+                    early_stopping = True,
+                    early_stopping_start = 15,
+                    patience = 5, 
+                    device = "cuda"
+                    )
+    trainer.train()
     
-    x = torch.ones(1, 4, 160, 160).to("cuda")
-    heatmaps = [torch.ones(1, 1, 20, 20).to("cuda"), torch.ones(1, 1, 10, 10).to("cuda"),]
-    x = model.forward(x, heatmaps)
 
-    print(x.size())
-# 
-#     print(x.size())
+    """TESTING
 
-    # torch.Size([1, 64, 20, 20])
-    # torch.Size([1, 128, 10, 10])
-    # torch.Size([1, 32, 40, 40])
+    model.to("cuda")
 
+    x = torch.zeros(1, 4, 160, 160).to("cuda")
+    x = model(x, x)
 
     """
-    model = YOLO_predictor.model
 
-
-    x = torch.ones(1, 4, 160, 160).to("cuda")
-    # model output
-    raw_preds = model(x, augment=False)
-    preds, protos = raw_preds[0], raw_preds[1][-1]
-
-    nms_preds = nms.non_max_suppression(preds)[0]
-
-    if nms_preds is None or len(nms_preds) == 0:
-        masks = torch.zeros((0, *x.shape[2:]), device=x.device)  # empty mask
-    else:
-        protos = protos[0]  # remove batch dim
-        masks = process_mask(protos, nms_preds[:, 6:], nms_preds[:, :4], x.shape[2:], upsample=True)
-    """
-
-    """
-    x = torch.ones(1, 4, 160, 160).to("cuda")
-
-    raw_preds = model(x, augment=False)
-    preds, protos = raw_preds[0], raw_preds[1][-1] if isinstance(raw_preds[1], tuple) else raw_preds[1]
-
-    nms_preds = nms.non_max_suppression(preds)[0]
-
-    print(len(nms_preds))
-    print(nms_preds.shape[0])
-
-    # if nms_preds is None or len(nms_preds) == 0: 
-    #     masks = torch.zeros((0, *x.shape[2:]), device=x.device)  # empty mask
-    # else: 
-
-
-    
-    protos = protos[0]
-    masks = process_mask(protos, preds[0][:, 6:], preds[0][:, :4], x.shape[2:], upsample=True)
-    """
-
-    # print(masks)
-
-    # Create YOLOU instance
-    # model = YOLOU(trainer=YOLO_trainer, predictor=YOLO_predictor).to("cuda")
-    # trainer = YOLOU_Trainer(model=model, 
-    #                         yolo=YOLO_predictor,
-    #                         data_path=DATA_PATH, 
-    #                         epochs=50,
-    #                         )
-    # 
-    # trainer.train()
