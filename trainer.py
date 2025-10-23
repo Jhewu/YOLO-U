@@ -270,7 +270,7 @@ class Trainer:
 
         # Initialize variables for callbacks
         self.history = dict(train_loss=[], val_loss=[], train_dice_metric=[], val_dice_metric=[])
-        best_val_loss = float("inf")
+        best_val_metric = float("-inf")
 
         # Create result directory
         dest_dir = f"runs/{self.get_current_time()}" 
@@ -299,8 +299,8 @@ class Trainer:
                     optimizer.zero_grad()
                     with torch.amp.autocast(device_type=self.device): 
                         pred = self.model(img, heatmap)
-
-                    loss = self.loss(pred.float(), mask)
+                        loss = self.loss(pred, mask)
+                    
                     if torch.isnan(loss):
                         print("NaN loss detected!")
                         print("Pred min/max:", pred.min().item(), pred.max().item())
@@ -313,7 +313,7 @@ class Trainer:
                     scaler.unscale_(optimizer)
 
                     # Since the gradients of optimizer's assigned params are unscaled, clips as usual:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    torch.nn.utils.clip_grad_norm_(trainable_param, max_norm=1.0)
 
                     # Optimizer's gradients are already unscaled, so scaler.step does not unscale them,
                     #   although it still skips optimizer.step() if the gradients contain infs or NaNs.
@@ -341,20 +341,7 @@ class Trainer:
 
                     train_running_loss += loss.item()
                     loss.backward()
-                    # for name, p in self.model.named_parameters():
-                    #     if ("bottleneck" in name) or ("decoder" in name):
-                    #         print(name, "grad norm:", None if p.grad is None else p.grad.norm().item())
-                    # from collections import defaultdict
-                    # grad_norms = defaultdict(float)
-                    # for name, p in self.model.named_parameters():
-                    #     if p.grad is None:
-                    #         continue
-                    #     # reduce name to module prefix
-                    #     prefix = name.split('.')[0]
-                    #     grad_norms[prefix] += p.grad.norm().item()  # L2 of param-subgrad contributions
-                    # 
-                    # for k, v in sorted(grad_norms.items(), key=lambda x: -x[1])[:30]:
-                    #     print(f"{k:30s} grad_norm_sum: {v:.6e}")
+                    
                     torch.nn.utils.clip_grad_norm_(trainable_param, max_norm=1.0)
                     optimizer.step()
 
@@ -397,14 +384,14 @@ class Trainer:
             self.history["val_dice_metric"].append(val_dice_metric)
             self.history["train_dice_metric"].append(train_dice_metric)
 
-            if val_loss < best_val_loss: 
-                if (best_val_loss - val_loss) > 1e-2:
-                    print(f"Validation loss improved from {best_val_loss:.4f} to {val_loss:.4f}. Saving model...")
-                    best_val_loss = val_loss
+            if val_dice_metric > best_val_metric: 
+                if abs(best_val_metric - val_dice_metric) > 1e-3:
+                    print(f"Validation Dice Metric improved from {best_val_metric:.4f} to {val_dice_metric:.4f}. Saving model...")
+                    best_val_metric = val_dice_metric
                     torch.save(self.model.state_dict(), os.path.join(os.path.join(model_dir, "best.pth")))
                     patience = 0
                 else: 
-                    print(f"Validation loss improved slightly from {best_val_loss:.4f} to {val_loss:.4f}, but not significantly enough to save the model.")
+                    print(f"Validation Dice Metric improved slightly from {best_val_metric:.4f} to {val_dice_metric:.4f}, but not significantly enough to save the model.")
                     if epoch+1 >= self.early_stopping_start: 
                         patience+=1
             else:
@@ -459,7 +446,7 @@ if __name__ == "__main__":
                     epochs=30,
                     image_size = 160,
                     batch_size = 64,
-                    lr = 1e-3,
+                    lr = 1e-4,
 
                     early_stopping = True,
                     early_stopping_start = 15,
@@ -467,7 +454,11 @@ if __name__ == "__main__":
                     device = "cuda"
                     )
     trainer.train()
-    
+
+#     model.to("cuda")
+# 
+#     x = torch.zeros(1, 4, 160, 160).to("cuda")
+#     x = model(x, x)
 
     """TESTING
 

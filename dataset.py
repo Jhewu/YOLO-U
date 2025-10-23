@@ -59,9 +59,9 @@ class CustomDataset(Dataset):
                 heatmap_tensor = transforms.ToTensor()(heatmap_tensor)
 
                 # Heatmap normalization
-                mean, std  = heatmap_tensor.mean(), heatmap_tensor.std()
-                if std > 0: heatmap_tensor = (heatmap_tensor - mean) / std
-                else: heatmap_tensor = heatmap_tensor - mean # Avoid NaN if std = 0
+                # mean, std  = heatmap_tensor.mean(), heatmap_tensor.std()
+                # if std > 0: heatmap_tensor = (heatmap_tensor - mean) / std
+                # else: heatmap_tensor = heatmap_tensor - mean # Avoid NaN if std = 0
 
                 heatmap_tensors.append(heatmap_tensor)
             return img_tensor, mask_tensor, heatmap_tensors

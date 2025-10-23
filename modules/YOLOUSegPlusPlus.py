@@ -18,6 +18,8 @@ from custom_yolo_trainer.custom_trainer import CustomDetectionTrainer
 from modules.eca import ECA
 from modules.stn import SpatialTransformer
 
+from modules.unet_parts import DoubleConv, DownSample, UpSample
+
 class YOLOUSegPlusPlus(Module): 
     def __init__(self,
                  predictor: CustomDetectionPredictor,
@@ -76,76 +78,134 @@ class YOLOUSegPlusPlus(Module):
 
         super().__init__()
         ### YOLO12 (detect) Section
-        self.yolo_predictor = predictor # for inference
+        self.yolo_predictor = predictor # <- For inference
 
         ### YOLOU-Seg++ Modules Section
-        self.encoder = predictor.model.model.model[0:9] # <- Obtain sequential modules from 0-8 for training
-
-        ### ENABLE GRADIENTS FOR ENCODER PARAMETERS
+        self.encoder = nn.ModuleList(module for module in predictor.model.model.model[0:9]) 
         for param in self.encoder.parameters(): 
             param.requires_grad = False
-        self.encoder.eval()
+        self.encoder.eval() 
 
-        ### TO ENSURE THE ENCODER IS REGISTERED UNDER THIS CUSTOM TORCH MODEL/MODULE
-        # self.encoder = nn.ModuleList()
-        # for layer in self.encoder_layers: 
-        #     self.encoder.append(layer)
-        
-        ### FREEZE
-        # for param in self.encoder.parameters(): 
-        #     param.requires_grad = False
-            
-        self.bottleneck = Sequential(        
-                # SpatialTransformer(in_channels=self.encoder[-1].cv2.conv.out_channels), # <- Learns geometric transformation, to correct encoder features
-                # ECA(), # <- weights the channels
-                BottleneckCSP(c1=256, 
-                              c2=256, 
-                              n=2, 
-                              shortcut=True, 
-                              g=1,
-                              e=0.5))
-        self.decoder = self._construct_decoder_from_encoder()[:-1] # <- Skip the last conv layer, to output binary masks
+        self.bottleneck = DoubleConv(256, 256)
 
-        self.last_conv = Conv(
-                c1=16, 
-                c2=1,
-                k=3
-                )
-                
-        ### YOLOU-Seg++ Helper (Separate Modules Used in forward() in Decoder)
-        self._upsample = Upsample(scale_factor = 2, mode = "bilinear", align_corners = True)
-        self._sigmoid = Sigmoid()
-        self._ecas = nn.ModuleList( [ECA() for i in range( len(target_modules_indices ) )] )
-        self._heatmap_params = nn.ParameterList( [nn.Parameter(torch.tensor(1.0)) for i in range( len(target_modules_indices) - 1)] )
-        self._heatmap_proj = nn.ModuleList([
+        self.decoder = nn.ModuleList([
+            DoubleConv(256, 256), 
+            DoubleConv(256, 128),
+            DoubleConv(128, 128),
+            DoubleConv(128, 128),
+            DoubleConv(128, 64),
+            DoubleConv(64, 64),
+            DoubleConv(64, 32),
+            DoubleConv(32, 16)])               # TODO: REPLACE WITH CONV
+
+        self.concat_proj = nn.ModuleList([ 
             nn.Conv2d(
-                in_channels = 1,
-                out_channels = 128, 
-                kernel_size = 1) 
-                for i in range(2)])
-        self._concat_proj = nn.ModuleList([ 
-            nn.Conv2d(
-                in_channels = 128*2,
+                in_channels = 256,
                 out_channels = 128, 
                 kernel_size = 1),   # <- A2C2F (Module 6 in YOLO Backbone)
             nn.Conv2d(
-                in_channels = 128*2,
+                in_channels = 256,
                 out_channels = 128, 
                 kernel_size = 1),   # <- C3k2 (Module 4 in YOLO Backbone)
             nn.Conv2d(
-                in_channels = 64*2,
+                in_channels = 128,
                 out_channels = 64, 
                 kernel_size = 1)])  # <- C3k2 (Module 2 in YOLO Backbone)
-        self._residual_proj = nn.ModuleList([
-            nn.Conv2d(
-                in_channels = 64*2,
-                out_channels = 64, 
-                kernel_size = 1), 
-            nn.Conv2d(
-                in_channels = 32*2, 
-                out_channels = 32, 
-                kernel_size = 1),      
-        ])
+
+        self.heatmap_proj = nn.ModuleList([
+                nn.Conv2d(
+                in_channels = 1,
+                out_channels = 128, 
+                kernel_size = 1) 
+                for i in range(2)
+                ])
+
+
+        # self.bottleneck = Sequential(
+        #     # SpatialTransformer(256),
+        #     # BottleneckCSP(
+        #     #     c1=256, 
+        #     #     c2=256, 
+        #     #     n=2, 
+        #     #     shortcut=False, 
+        #     #     g=1,
+        #     #     e=0.5) 
+        #     DoubleConv(256, 256), # TODO: REPLACE WITH CSP BOTTLENECK
+        #     # DoubleConv(256, 256)
+        # )
+
+#         print(list(self.bottleneck[-1].modules()))
+# 
+#         for module in self.bottleneck[-1].modules():
+#             if isinstance(module, torch.nn.BatchNorm2d):
+#                 module.eval()
+
+        # self.skip_adapt = nn.ModuleList([
+        #     Sequential(
+        #         nn.Conv2d(
+        #             in_channels = 128, 
+        #             out_channels = 128, 
+        #             kernel_size = 1, 
+        #             padding = 1), 
+        #         nn.ReLU(inplace=True)
+        #     ), 
+        #     Sequential(
+        #         nn.Conv2d(
+        #             in_channels = 128, 
+        #             out_channels = 128, 
+        #             kernel_size = 1, 
+        #             padding = 1), 
+        #         nn.ReLU(inplace=True)
+        #     ), 
+        #     Sequential(
+        #         nn.Conv2d(
+        #             in_channels = 64, 
+        #             out_channels = 64, 
+        #             kernel_size = 1, 
+        #             padding = 1), 
+        #         nn.ReLU(inplace=True)
+        #     )])
+
+        # self.heatmap_param = nn.ParameterList( [nn.Parameter(torch.tensor(1.0)) for i in range( len(target_modules_indices) - 1) ])
+        
+        # self.eca = nn.ModuleList([ECA() for i in range( len(target_modules_indices) )])
+        self.output = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=1)
+            
+#         self.bottleneck = Sequential(     
+#                 ### DISABLING THESE FOR NOW   
+#                 # SpatialTransformer(in_channels=self.encoder[-1].cv2.conv.out_channels), # <- Learns geometric transformation, to correct encoder features
+#                 # ECA(), # <- weights the channels
+#                 BottleneckCSP(c1=256, 
+#                               c2=256, 
+#                               n=2, 
+#                               shortcut=True, 
+#                               g=1,
+#                               e=0.5))
+#         self.decoder = self._construct_decoder_from_encoder()[:-1] # <- Skip the last conv layer, to output binary masks
+# 
+#         self.last_conv = Conv(
+#                 c1=256, 
+#                 c2=1,
+#                 k=3
+#                 )
+                
+        ### YOLOU-Seg++ Helper (Separate Modules Used in forward() in Decoder)
+        self.upsample = Upsample(scale_factor = 2, mode = "bilinear", align_corners = True)
+        self.sigmoid = Sigmoid()
+        
+        # self._ecas = nn.ModuleList( [ECA() for i in range( len(target_modules_indices ) )] )
+        # self._heatmap_params = nn.ParameterList( [nn.Parameter(torch.tensor(1.0)) for i in range( len(target_modules_indices) - 1)] )
+
+        # self._residual_proj = nn.ModuleList([
+        #     nn.Conv2d(
+        #         in_channels = 64*2,
+        #         out_channels = 64, 
+        #         kernel_size = 1), 
+        #     nn.Conv2d(
+        #         in_channels = 32*2, 
+        #         out_channels = 32, 
+        #         kernel_size = 1),      
+        # ])
         
         ### Miscellaneous Section
         self.verbose = verbose
@@ -201,110 +261,6 @@ class YOLOUSegPlusPlus(Module):
         if not found:
             raise ValueError(f"Modules not found in YOLO")
 
-#     def _create_concat_block(self, skip: torch.tensor, x: torch.tensor) -> torch.tensor:
-#         """
-#         Creates encoder-to-decoder concat blocks during the decoder step in forward()
-# 
-#         Args:
-#             skip (torch.tensor): Encoder skip tensor
-#             x    (torch.tensor): Decoder x tensor from bottleneck
-# 
-#         Returns:
-#             (torch.tensor): concated tensor of size [B, skip_C + x_C, H, W]
-#         """
-#         conv = Conv(
-#             c1=skip.size(1)+x.size(1), 
-#             c2=skip.size(1), 
-#             k=1, 
-#             s=1).to(x.device)
-#         return conv(torch.cat([skip, x], dim=1))
-
-#     def YOLO_forward(self, x: torch.tensor) -> torch.tensor: 
-#         """
-#         YOLOv12-Seg Forward() used at first step of YOLOU
-# 
-#         Args:
-#             x (torch.tensor): Input tensor.
-# 
-#         Returns:
-#             (torch.tensor): YOLOv12 bbox in batches
-#             (torch.tensor): cached backbone output (defined in _assign_hook)
-#         """
-# 
-#         with torch.no_grad():
-#             results = self.yolo_predictor(x)
-# 
-#         # Sums the boxes and stack it
-#         box_batch = torch.zeros( (len(results), 1, *results[0].orig_shape), device='cuda') # [B, C, H, W]
-#         for i, result in enumerate(results):
-#             if result.boxes:
-#                 box_batch[i] = torch.sum(result.boxes, dim=0).unsqueeze(0)
-# 
-#         return mask_batch, self.activation_cache.pop()
-    
-    def _STN_forward(self, x: torch.tensor) -> torch.tensor: 
-        """
-        Adaptive STN Forward()
-        STN Module Learns Affine transform parameters
-        Automatically Set Channel
-
-        Args:
-            x (torch.tensor): Input tensor.
-
-        Returns:
-            (torch.tensor): Spatially transformed tensor
-        """
-        self.stn = SpatialTransformer(in_channels=x.size()[1]).to("cuda")
-        return self.stn(x)
-    
-    def _concat_masks_forward(self, masks: torch.tensor, x: torch.tensor) -> torch.tensor: 
-        """
-        Adapt YOLO predicted, and concantenate
-        with CSPNet Bottleneck features while 
-        applying ECA-Net attention
-
-        Args:
-            masks (torch.tensor): Masks tensor (B,1,160,160)
-            x     (torch.tensor): Input tensor
-
-        Returns:
-            (torch.tensor): 
-        """
-        mask = torch.nn.functional.interpolate(masks, size=(5, 5), mode='bilinear').to("cuda")  # -> [B, 1, 5, 5]
-        proj_conv = nn.Conv2d(1, 256, kernel_size=1).to("cuda")                                 
-        masks = proj_conv(mask)                                                                 # -> [B, 256, 5, 5]
-        concat = torch.cat([masks, x], dim=1).to("cuda")                                        # -> [B, 512, 5, 5]
-        self.eca = ECA().to("cuda")                                                             # Applying masks attention
-        return self.eca(concat)
-
-    def inference(self): 
-        """
-        TODO: IMPLEMENT INFERENCE WITH FORWARD HOOKS
-        """
-
-    
-        #         # decoder
-        # # COMMENT: for some reason self.yolo_predictor(x) triggers forward hooks twice, therefore
-        # #          take the middle and +1, because we popped at YOLO_forward()
-        # if len(self.activation_cache) > 6:
-        #     # print("\nActivation cache is greater than 6!")
-        #     self.skip_connections = self.activation_cache[(len(self.activation_cache)//2)+1:]
-        # else: 
-        #     # print("\nActivation cache is less than 6!")
-        #     self.skip_connections = self.activation_cache
-
-
-        return
-    def _reset_indices(self) -> None: 
-        """
-        Resets the indices used to keep track of the independent modules found in the Decoder section
-        """
-        self._indices["eca"]           = 0
-        self._indices["heatmap_param"] = 0
-        self._indices["heatmap_proj"]  = 0   
-        self._indices["concat_proj"]   = 0
-        self._indices["residual_proj"] = 0
-
     def forward(self, x: torch.tensor, heatmaps: List[torch.tensor]) -> torch.tensor: 
         """
         Main Forward Step for YOLOU-Seg++ (for Training)
@@ -319,27 +275,48 @@ class YOLOUSegPlusPlus(Module):
 
         TODO: Implement Residual Connections for the non-YOLO Layers
         """
-        # Reset each forward()
-        self.skip_connections = []            
-        self._reset_indices()
-
         # Encoder (weights frozen in training loop)   
+        self.skip_connections = []
         for idx, module in enumerate(self.encoder):   
             x = module(x)  
             if idx in self._indices.get("skip_connections_encoder"):
-                self.skip_connections.append(x)                                 # <- Manually cache tensors for skips
-        # print("encoder out mean/std:", x.mean().item(), x.std().item())
+                self.skip_connections.append(x) # <- Manually cache tensors for skips
 
-        # print("X", x.requires_grad)
-        # for skip in self.skip_connections: 
-        #     print("Skips", skip.requires_grad)
+        x = self.bottleneck(x)
 
+        p = e = h = s = 0 # <- Module indices
+        for idx, module in enumerate(self.decoder): 
+            if idx in self._indices.get("upsample"): 
+                x = self.upsample(x)
+            
+            if idx in self._indices.get("skip_connections_decoder"): 
+                skip = self.skip_connections.pop()
+                ### SKIP ADAPT
+                # skip = self.skip_adapt[s](skip) ; s+=1
+                
+                ### HEATMAPS
+                if heatmaps: 
+                    heatmap = heatmaps.pop()
+                    gate = self.sigmoid( self.heatmap_proj[h](heatmap) ) ; h+=1
+                    # gate = self.heatmap_proj[h](heatmap) ; h+=1
+                    # print(skip.size(), gate.size())
+                    skip = skip * gate
+                
+                x = torch.concat([x, skip], dim=1)
+                
+                ### ECA ON CONCAT
+                # x = self.eca[e](x) ; e+=1
+                
+                x = self.concat_proj[p](x) ; p+=1
+            x = module(x)
+        out = self.output(self.upsample(x))
+        
         # Bottleneck (trainable)
-        x = self.bottleneck(x)   
+        # x = self.bottleneck(x)   
 
-        # Decoder (trainable)
-        for idx, module in enumerate(self.decoder):                                 # <- Remove last Conv, because last Conv must be 1-channel (binary mask)
-            if idx in self._indices.get("upsample"): x = self._upsample(x) 
+        # # Decoder (trainable)
+        # for idx, module in enumerate(self.decoder):                                 # <- Remove last Conv, because last Conv must be 1-channel (binary mask)
+        #     if idx in self._indices.get("upsample"): x = self._upsample(x) 
 #             if idx in self._indices.get("skip_connections_decoder"):            
 #                 skip = self.skip_connections.pop()
 # 
@@ -371,11 +348,13 @@ class YOLOUSegPlusPlus(Module):
             #         self._indices["residual_proj"]+=1
             #         x = x + proj(residual)
             # else: 
-            x = module(x)
+            # x = module(x)
 
-        # Output (trainable)
-        x = self.last_conv( self._upsample(x) )
-        return x
+        # # Output (trainable)
+        # for i in range(5): 
+        #     x = self._upsample(x)
+        # x = self.last_conv( x ) 
+        return out
 
     def _reverse_module_channels(self, module: nn.Module) -> nn.Module:
         """
