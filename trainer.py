@@ -440,7 +440,7 @@ if __name__ == "__main__":
     trainer = Trainer(model=model, 
                     data_path="data/stacked_segmentation", 
                     model_path=None, 
-                    load_and_train=False,
+                    load_and_train=True,
                     mixed_precision = False,
                 
                     epochs=75,
