@@ -208,7 +208,7 @@ class Trainer:
                             heatmap_path = "heatmap/val",
                             mask_path = "masks/val", 
                             image_size = self.image_size, 
-                            heatmap_sizes = [20, 10])
+                            heatmap_sizes = [20, 10]) # MODIFIED TO INCLUDE P2
 
         train_dataloader = DataLoader(dataset=train_dataset,
                                     batch_size=self.batch_size,
@@ -412,7 +412,7 @@ class Trainer:
             print("-"*30)
 
             if patience >= self.patience: 
-                print(f"\nEARLY STOPPING: Valid Loss did not improve since epoch {epoch+1-patience}, terminating training...")
+                print(f"\nEARLY STOPPING: Valid Loss did not improve since epoch {epoch+1-patience} with Validation Dice Metric {best_val_metric}, terminating training...")
                 break
 
         torch.save(self.model.state_dict(), os.path.join(os.path.join(model_dir, "last.pth")))
@@ -443,13 +443,13 @@ if __name__ == "__main__":
                     load_and_train=False,
                     mixed_precision = False,
                 
-                    epochs=30,
+                    epochs=75,
                     image_size = 160,
                     batch_size = 64,
                     lr = 1e-4,
 
                     early_stopping = True,
-                    early_stopping_start = 15,
+                    early_stopping_start = 50,
                     patience = 5, 
                     device = "cuda"
                     )

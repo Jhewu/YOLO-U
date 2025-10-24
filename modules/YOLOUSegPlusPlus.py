@@ -86,17 +86,40 @@ class YOLOUSegPlusPlus(Module):
             param.requires_grad = False
         self.encoder.eval() 
 
-        self.bottleneck = DoubleConv(256, 256)
+        self.bottleneck = Sequential(
+            DoubleConv(256, 256),
+        )
 
         self.decoder = nn.ModuleList([
-            DoubleConv(256, 256), 
-            DoubleConv(256, 128),
+        Sequential(
+            DoubleConv(256, 256),
+            DoubleConv(256, 256),
+        ),
+        DoubleConv(256, 128),
+        Sequential(
             DoubleConv(128, 128),
+            DoubleConv(128, 128),
+         ),
+         DoubleConv(128, 128),
+         Sequential(
             DoubleConv(128, 128),
             DoubleConv(128, 64),
+        ),
+        DoubleConv(64, 64),
+        Sequential(
             DoubleConv(64, 64),
             DoubleConv(64, 32),
-            DoubleConv(32, 16)])               # TODO: REPLACE WITH CONV
+        ),
+        DoubleConv(32, 16),
+        ])
+            # DoubleConv(256, 256), 
+            # DoubleConv(256, 128),
+            # DoubleConv(128, 128),
+            # DoubleConv(128, 128),
+            # DoubleConv(128, 64),
+            # DoubleConv(64, 64),
+            # DoubleConv(64, 32),
+            # DoubleConv(32, 16)])               # TODO: REPLACE WITH CONV
 
         self.concat_proj = nn.ModuleList([ 
             nn.Conv2d(
@@ -114,12 +137,17 @@ class YOLOUSegPlusPlus(Module):
 
         self.heatmap_proj = nn.ModuleList([
                 nn.Conv2d(
-                in_channels = 1,
-                out_channels = 128, 
-                kernel_size = 1) 
-                for i in range(2)
-                ])
+                    in_channels = 1,
+                    out_channels = 128, 
+                    kernel_size = 1), 
+                nn.Conv2d(
+                    in_channels = 1,
+                    out_channels = 128, 
+                    kernel_size = 1), 
+                    ])
 
+        self.eca = nn.ModuleList([ECA() for i in range( len(target_modules_indices) )])
+        self.output = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=1)
 
         # self.bottleneck = Sequential(
         #     # SpatialTransformer(256),
@@ -168,8 +196,7 @@ class YOLOUSegPlusPlus(Module):
 
         # self.heatmap_param = nn.ParameterList( [nn.Parameter(torch.tensor(1.0)) for i in range( len(target_modules_indices) - 1) ])
         
-        # self.eca = nn.ModuleList([ECA() for i in range( len(target_modules_indices) )])
-        self.output = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=1)
+        
             
 #         self.bottleneck = Sequential(     
 #                 ### DISABLING THESE FOR NOW   
@@ -193,9 +220,6 @@ class YOLOUSegPlusPlus(Module):
         self.upsample = Upsample(scale_factor = 2, mode = "bilinear", align_corners = True)
         self.sigmoid = Sigmoid()
         
-        # self._ecas = nn.ModuleList( [ECA() for i in range( len(target_modules_indices ) )] )
-        # self._heatmap_params = nn.ParameterList( [nn.Parameter(torch.tensor(1.0)) for i in range( len(target_modules_indices) - 1)] )
-
         # self._residual_proj = nn.ModuleList([
         #     nn.Conv2d(
         #         in_channels = 64*2,
@@ -212,9 +236,8 @@ class YOLOUSegPlusPlus(Module):
         self.skip_connections = []
         self._indices = {
                 "upsample": set([1, 3, 5, 7, 8]), 
-                "skip_connections_encoder": set(target_modules_indices), 
-                "skip_connections_decoder": set([2, 4, 6]), 
-                "eca":0, "heatmap_param": 0, "heatmap_proj": 0, "concat_proj": 0, "residual_proj": 0} 
+                "skip_connections_encoder": set(target_modules_indices), # [2, 4, 6, 8]
+                "skip_connections_decoder": set( [ abs(item-8) for item in reversed(target_modules_indices) ] )} 
         
         ### TODO: IMPLEMENT THIS DYNAMIC DECODER INDICES LATER
         # self.skip_decoder_indices = set([abs(target_modules_indices[-1] - item + 1) # ---> Reverses and normalizes the indices
@@ -291,6 +314,7 @@ class YOLOUSegPlusPlus(Module):
             
             if idx in self._indices.get("skip_connections_decoder"): 
                 skip = self.skip_connections.pop()
+                # skip = self.eca[e](skip) ; e+=1
                 ### SKIP ADAPT
                 # skip = self.skip_adapt[s](skip) ; s+=1
                 
@@ -298,15 +322,10 @@ class YOLOUSegPlusPlus(Module):
                 if heatmaps: 
                     heatmap = heatmaps.pop()
                     gate = self.sigmoid( self.heatmap_proj[h](heatmap) ) ; h+=1
-                    # gate = self.heatmap_proj[h](heatmap) ; h+=1
-                    # print(skip.size(), gate.size())
-                    skip = skip * gate
+                    skip = skip + (gate * skip)
                 
                 x = torch.concat([x, skip], dim=1)
-                
                 ### ECA ON CONCAT
-                # x = self.eca[e](x) ; e+=1
-                
                 x = self.concat_proj[p](x) ; p+=1
             x = module(x)
         out = self.output(self.upsample(x))
