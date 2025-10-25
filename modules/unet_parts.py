@@ -1,9 +1,26 @@
 import torch
 import torch.nn as nn
 
+from ultralytics.nn.modules import LightConv
+
 class DoubleConv(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
+        # IMPLEMENTATION OF DSC
+        # self.conv = nn.Sequential(
+        #     LightConv(
+        #         c1=in_channels, 
+        #         c2=out_channels, 
+        #         k=3, 
+        #         act=nn.SiLU)
+        #     LightConv(
+        #         c1=out_channels, 
+        #         c2=out_channels, 
+        #         k=3, 
+        #         act=nn.SiLU))
+        # self.activation = nn.SiLU(inplace = True)
+        
+        ### PREVIOUS IMPLEMENTATION REGULAR RESIDUALDOUBLECONV
         self.conv = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(out_channels),
@@ -12,7 +29,7 @@ class DoubleConv(nn.Module):
             nn.BatchNorm2d(out_channels)
         )
         self.activation = nn.ReLU(inplace = True)
-
+        
         # 1x1 conv to match channels if needed
         self.residual_conv = (
             nn.Conv2d(in_channels, out_channels, kernel_size=1)
@@ -25,6 +42,7 @@ class DoubleConv(nn.Module):
         out+=residual
         return self.activation(out)
 
+        ### PREVIOUS IMPLEMENTATION REGULAR DOUBLECONV
         # self.conv_op = nn.Sequential(
         #     nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
         #     nn.ReLU(inplace=True),

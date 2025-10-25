@@ -6,11 +6,12 @@ from collections import OrderedDict
 from typing import List
 
 from ultralytics.nn.modules import (
+
     ## For the bottleneck
     BottleneckCSP, 
 
     ## For the decoder reconstruct
-    Conv, C3k2, A2C2f)
+    Conv, C3k2, A2C2f) # TODO: REMOVE IF NOT USING
 
 # local/custom scripts
 from custom_yolo_predictor.custom_detseg_predictor import CustomDetectionPredictor
@@ -19,6 +20,25 @@ from modules.eca import ECA
 from modules.stn import SpatialTransformer
 
 from modules.unet_parts import DoubleConv, DownSample, UpSample
+
+class CBAMLiteFusion(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        self.channel_proj = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(in_channels, in_channels // 8, 1),
+            nn.ReLU(),
+            nn.Conv2d(in_channels // 8, in_channels, 1),
+            nn.Sigmoid()
+        )
+        self.spatial_proj = nn.Conv2d(2 * in_channels, 1, 7, padding=3, bias=False)  # 7x7 as suggested
+
+    def forward(self, skip, heatmap):
+        channel_gate = self.channel_proj(skip)
+        spatial_gate = torch.sigmoid(self.spatial_proj(torch.cat([skip, heatmap], dim=1)))
+        gate = channel_gate * spatial_gate
+        return heatmap + gate * skip
+        # return skip + (gate * heatmap)  # or try: heatmap + gate * skip
 
 class YOLOUSegPlusPlus(Module): 
     def __init__(self,
@@ -139,6 +159,51 @@ class YOLOUSegPlusPlus(Module):
                     kernel_size = 1), 
                     ])
 
+        self.cbam = nn.ModuleList([
+            CBAMLiteFusion(128), 
+            CBAMLiteFusion(128)
+        ])
+
+        self.pixelshuffle = nn.ModuleList([
+            Sequential(
+            nn.PixelShuffle(2),  # Upscale by 2x
+            nn.Conv2d(256//4, 128, 3, padding=1)), 
+            Sequential(
+            nn.PixelShuffle(2),  # Upscale by 2x
+            nn.Conv2d(128//4, 128, 3, padding=1)), 
+            Sequential(
+            nn.PixelShuffle(2),  # Upscale by 2x
+            nn.Conv2d(64//4, 64, 3, padding=1)), 
+            Sequential(
+            nn.PixelShuffle(2),  # Upscale by 2x
+            nn.Conv2d(32//4, 16, 3, padding=1)), 
+            Sequential(
+            nn.PixelShuffle(2),  # Upscale by 2x
+            nn.Conv2d(16//4, 1, 3, padding=1))
+        ])
+
+        # nn.Conv2d(in_channels//4, out_channels, 3, padding=1)
+
+        """
+        -------------------------------------------------------------------------------------------------------------
+        YOLOv12 backbone
+        -------------------------------------------------------------------------------------------------------------
+                                   from  n    params  module                                       arguments
+          0                  -1  1       608  ultralytics.nn.modules.conv.Conv             [4, 16, 3, 2]
+          1                  -1  1      4672  ultralytics.nn.modules.conv.Conv             [16, 32, 3, 2]
+          2                  -1  1      6640  ultralytics.nn.modules.block.C3k2            [32, 64, 1, False, 0.25]
+          3                  -1  1     36992  ultralytics.nn.modules.conv.Conv             [64, 64, 3, 2]
+          4                  -1  1     26080  ultralytics.nn.modules.block.C3k2            [64, 128, 1, False, 0.25]
+          5                  -1  1    147712  ultralytics.nn.modules.conv.Conv             [128, 128, 3, 2]
+          6                  -1  2    180864  ultralytics.nn.modules.block.A2C2f           [128, 128, 2, True, 4]
+          7                  -1  1    295424  ultralytics.nn.modules.conv.Conv             [128, 256, 3, 2]
+          8                  -1  2    689408  ultralytics.nn.modules.block.A2C2f           [256, 256, 2, True, 1]
+        -------------------------------------------------------------------------------------------------------------
+        """
+
+
+        
+
         self.eca = nn.ModuleList([ECA() for i in range( len(target_modules_indices) )])
         self.output = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=1)
       
@@ -222,28 +287,37 @@ class YOLOUSegPlusPlus(Module):
 
         x = self.bottleneck(x)
 
-        p = e = h = s = 0 # <- Module indices
+        p = e = h = c = px = 0 # <- Module indices
         for idx, module in enumerate(self.decoder): 
             if idx in self._indices.get("upsample"): 
+                ### PIXEL SHUFFLE
+                # x = self.pixelshuffle[px](x) ; px+=1
+
+                ### PREVIOUS UPSAMPLING
                 x = self.upsample(x)
             
             if idx in self._indices.get("skip_connections_decoder"): 
                 skip = self.skip_connections.pop()
-                ### SKIP ADAPT
-                # skip = self.skip_adapt[s](skip) ; s+=1
                 
-                ### HEATMAPS
                 if heatmaps: 
                     heatmap = heatmaps.pop()
-                    gate = self.sigmoid( self.heatmap_proj[h](heatmap) ) ; h+=1
-                    skip = skip + (gate * skip)
+                    # NEW CBAM IMPLEMENTATION
+                    heatmap = self.heatmap_proj[h](heatmap) ; h+=1
+                    skip = self.cbam[c](skip, heatmap) ; c+=1
+
+                    ### PREVIOUS IMPLEMENTATION
+                    # gate = self.sigmoid( self.heatmap_proj[h](heatmap) ) ; h+=1
+                    # skip = skip + (gate * skip)
                 
                 x = torch.concat([x, skip], dim=1)
                 x = self.eca[e](x) ; e+=1
                 x = self.concat_proj[p](x) ; p+=1
             x = module(x)
-        out = self.output(self.upsample(x))
 
+        ### PREVIOUS UPSAMPLING
+        out = self.output(self.upsample(x))
+        # x = self.pixelshuffle[px](x) ; px+=1
+        # out = self.output(x)
         return out
 
     def _reverse_module_channels(self, module: nn.Module) -> nn.Module:
