@@ -6,6 +6,7 @@ from collections import OrderedDict
 from typing import List
 
 from ultralytics.nn.modules import (
+
     LightConv,
 
     ## For the bottleneck
@@ -32,7 +33,7 @@ class CBAMLiteFusion(nn.Module):
             nn.Conv2d(in_channels // 8, in_channels, 1),
             nn.Sigmoid()
         )
-        self.spatial_proj = nn.Conv2d(2 * in_channels, 1, 5, padding=2, bias=False)  # 7x7 as suggested
+        self.spatial_proj = nn.Conv2d(2 * in_channels, 1, 7, padding=3, bias=False)  # 7x7 as suggested
 
     def forward(self, skip, heatmap):
         channel_gate = self.channel_proj(skip)
@@ -109,31 +110,26 @@ class YOLOUSegPlusPlus(Module):
         self.bottleneck = Sequential(
             SpatialTransformer(256), 
             DoubleConv(256, 256),
-            # GhostBlock(256, 256) # EXPERIMENT WITH BOTTLENECK
         )
         
         self.decoder = nn.ModuleList([
         Sequential(
-            GhostBlock(256, 256),
-            # DoubleConv(256, 256),
+            DoubleConv(256, 256),
             DoubleConv(256, 256),
         ),
         DoubleLightConv(256, 128),
         Sequential(
-            GhostBlock(128, 128),
-            # DoubleConv(128, 128),
+            DoubleConv(128, 128),
             DoubleConv(128, 128),
          ),
          DoubleLightConv(128, 128),
          Sequential(
-            GhostBlock(128, 128),
-            # DoubleConv(128, 128), 
+            DoubleConv(128, 128),
             DoubleConv(128, 64),
         ),
         DoubleLightConv(64, 64),
         Sequential(
-            GhostBlock(64, 64),
-            # DoubleConv(64, 64),
+            DoubleConv(64, 64),
             DoubleConv(64, 32),
         ),
         DoubleLightConv(32, 16),
@@ -168,7 +164,7 @@ class YOLOUSegPlusPlus(Module):
             CBAMLiteFusion(128), 
             CBAMLiteFusion(128)
         ])
-        
+
         """
         -------------------------------------------------------------------------------------------------------------
         YOLOv12 backbone
