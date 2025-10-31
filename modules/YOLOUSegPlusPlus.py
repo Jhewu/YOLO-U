@@ -108,33 +108,40 @@ class YOLOUSegPlusPlus(Module):
 
         self.bottleneck = Sequential(
             SpatialTransformer(256), 
+            GhostBlock(256, 256), # EXPERIMENT WITH BOTTLENECK
             DoubleConv(256, 256),
-            # GhostBlock(256, 256) # EXPERIMENT WITH BOTTLENECK
+            
         )
         
         self.decoder = nn.ModuleList([
         Sequential(
             GhostBlock(256, 256),
             # DoubleConv(256, 256),
-            DoubleConv(256, 256),
+            # DoubleConv(256, 256),
+            GhostBlock(256, 256),
         ),
         DoubleLightConv(256, 128),
         Sequential(
             GhostBlock(128, 128),
             # DoubleConv(128, 128),
-            DoubleConv(128, 128),
+            # DoubleConv(128, 128),
+            GhostBlock(128, 128),
          ),
          DoubleLightConv(128, 128),
          Sequential(
             GhostBlock(128, 128),
+            # GhostBlock(128, 128),
             # DoubleConv(128, 128), 
-            DoubleConv(128, 64),
+            # DoubleConv(128, 64),
+            GhostBlock(128, 64),
         ),
         DoubleLightConv(64, 64),
         Sequential(
-            GhostBlock(64, 64),
+            GhostBlock(64, 64),  
+            # GhostBlock(64, 64),
             # DoubleConv(64, 64),
-            DoubleConv(64, 32),
+            # DoubleConv(64, 32),
+            GhostBlock(64, 32),
         ),
         DoubleLightConv(32, 16),
         ])
@@ -279,12 +286,12 @@ class YOLOUSegPlusPlus(Module):
                     heatmap = heatmaps.pop()
                     
                     # NEW CBAM IMPLEMENTATION
-                    heatmap = self.heatmap_proj[h](heatmap) ; h+=1
-                    skip = self.cbam[c](skip, heatmap) ; c+=1
+                    # heatmap = self.heatmap_proj[h](heatmap) ; h+=1
+                    # skip = self.cbam[c](skip, heatmap) ; c+=1
 
                     ### PREVIOUS IMPLEMENTATION
-                    # gate = self.sigmoid( self.heatmap_proj[h](heatmap) ) ; h+=1
-                    # skip = skip + (gate * skip)
+                    gate = self.sigmoid( self.heatmap_proj[h](heatmap) ) ; h+=1
+                    skip = skip + (gate * skip)
                 
                 x = torch.concat([x, skip], dim=1)
                 x = self.eca[e](x) ; e+=1
