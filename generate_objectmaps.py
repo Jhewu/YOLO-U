@@ -92,7 +92,8 @@ def generate_objectmaps():
             twenty, ten, five = cls_branch # 20x20, 10x10, 5x5
 
             # Apply Sigmoid
-            twenty, ten = torch.sigmoid(twenty[:, -1:]), torch.sigmoid(ten[:, -1:]) # <- Obtain the last channel
+            # twenty, ten = torch.sigmoid(twenty[:, -1:]), torch.sigmoid(ten[:, -1:]) # <- Obtain the last channel
+            twenty, ten = twenty[:, -1:], ten[:, -1:] # <- Obtain the last channel
 
             # Create dest filename
             basename = os.path.basename(image_path)

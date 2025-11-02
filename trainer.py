@@ -197,18 +197,18 @@ class Trainer:
         train_dataset = CustomDataset(
                             root_path = data_path, 
                             image_path = "images/train", 
-                            heatmap_path = "heatmap/train", 
+                            objectmap_path = "objectmap/train", 
                             mask_path = "masks/train",
                             image_size = self.image_size, 
-                            heatmap_sizes = [20, 10])
+                            objectmap_sizes = [20, 10])
                             
         val_dataset = CustomDataset(
                             root_path = data_path, 
                             image_path = "images/val", 
-                            heatmap_path = "heatmap/val",
+                            objectmap_path = "objectmap/val",
                             mask_path = "masks/val", 
                             image_size = self.image_size, 
-                            heatmap_sizes = [20, 10]) # MODIFIED TO INCLUDE P2
+                            objectmap_sizes = [20, 10]) # MODIFIED TO INCLUDE P2
 
         train_dataloader = DataLoader(dataset=train_dataset,
                                     batch_size=self.batch_size,
