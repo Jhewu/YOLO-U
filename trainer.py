@@ -221,11 +221,13 @@ class Trainer:
 
         train_dataloader = DataLoader(dataset=train_dataset,
                                     batch_size=self.batch_size,
-                                    shuffle=False)
+                                    shuffle=False, 
+                                    num_workers=10)
                                     
         val_dataloader = DataLoader(dataset=val_dataset,
                                     batch_size=self.batch_size,
-                                    shuffle=False) # <- do not shuffle
+                                    shuffle=False, 
+                                    num_workers=10) # <- do not shuffle
                                     
         return train_dataloader, val_dataloader
 
@@ -308,10 +310,10 @@ class Trainer:
                 for idx, img_mask_heatmap in enumerate(tqdm(train_dataloader)):
                     img = img_mask_heatmap[0].float().to(self.device)
                     mask = img_mask_heatmap[1].float().to(self.device)
-                    heatmap = [heatmap.to(self.device) for heatmap in img_mask_heatmap[2]] # List of Tensors
+                    heatmaps = img_mask_heatmap[2][0].float().to(self.device)
                     optimizer.zero_grad()
                     with torch.amp.autocast(device_type=self.device): 
-                        pred = self.model(img, heatmap)
+                        pred = self.model(img, heatmaps)
                         loss = self.loss(pred, mask)
                     
                     if torch.isnan(loss):
@@ -471,6 +473,8 @@ if __name__ == "__main__":
     # Create YOLOU instance
     model = YOLOUSegPlusPlus(predictor=YOLO_predictor)
 
+    YOLO_predictor.model.to('cpu')
+
 #     model_dir = "/home/jun/Desktop/inspirit/YOLOU-SegPlusPlus/runs/2025_11_04_11_14_07/weights/best.pth"
 # 
 #     # Load the checkpoint
@@ -496,11 +500,11 @@ if __name__ == "__main__":
                     data_path="data/stacked_segmentation", 
                     model_path=None, 
                     load_and_train=True,
-                    mixed_precision = False,
+                    mixed_precision = True,
                 
                     epochs=75,
                     image_size = 160,
-                    batch_size = 64,
+                    batch_size = 128,
                     lr = 1e-4,
 
                     early_stopping = True,

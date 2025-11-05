@@ -4,7 +4,7 @@ import torch
 
 from typing import List
 
-from ultralytics.nn.modules import C3Ghost
+from ultralytics.nn.modules import C3Ghost, DWConv, C2f, DWConvTranspose2d, Conv, C3k2, ConvTranspose, CBAM, LightConv
 
 # local/custom scripts
 from custom_yolo_predictor.custom_detseg_predictor import CustomDetectionPredictor
@@ -72,33 +72,47 @@ class YOLOUSegPlusPlus(Module):
 
         super().__init__()
         ### YOLO predictor and backbone
-        self.yolo_predictor = predictor.model.model         # <- For inference
+        # self.yolo_predictor = predictor.model.model         # <- For inference
         self.encoder = nn.ModuleList(module for module in predictor.model.model.model[0:5]) 
         for param in self.encoder.parameters(): # <- Frozen
             param.requires_grad = False
         self.encoder.eval() 
 
-        ### Lightweight Decoder
-        self.input = DoubleLightConv(1, 64) # 20x20 Spatial Resolution
-        self.decoder = nn.ModuleList([
-            Sequential(
-                C3Ghost(64+128, 96),
-                DoubleLightConv(96, 96),    # <- Mixing (64 Input) + (128 Skip)    
-            ),
-            ECA(), 
-            DoubleLightConv(96, 64),        # <- Assume Upsample Here 20x20 -> 40x40
-            Sequential(
-                C3Ghost(64+64, 64),
-                DoubleLightConv(64, 64),    # <- Mixing (32 Input) + (64 Skip)    
-            ),
-            ECA(),    
-            DoubleLightConv(64, 32),        # <- Assume Upsample Here 40x40 -> 80x80 + (32 Skip) 
-            DoubleLightConv(32, 16),        # <- Assume Upsample Here 80x80 -> 160x160
-        ])
-        self.output = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=1) # <- Assume Upsample Here 80x80 -> 160x160
-        
-        ### Miscellaneous Section
         self.upsample = Upsample(scale_factor = 2, mode = "bilinear", align_corners = False)
+
+        ### Lightweight Decoder
+        self.input = LightConv(1, 64) # 20x20 Spatial Resolution
+        self.decoder = nn.ModuleList([
+            Sequential( # <- Mixing (64 Input) + (128 Skip)
+                C3Ghost(64+128+1, 96), 
+                ECA(),
+            ),
+            Sequential( # <- Assume Upsample Here 20x20 -> 40x40
+                self.upsample,
+                DoubleLightConv(96, 64),
+            ), 
+            Sequential( # <- Mixing (64 Input) + (64 Skip)
+                C3Ghost(64+64, 64),
+                ECA(),
+            ),
+            Sequential( # <- Assume Upsample Here 40x40 -> 80x80
+                self.upsample, 
+                DoubleLightConv(64, 32)
+            ),
+            Sequential( # <- Assume Upsample Here 80x80 -> 160x160
+                self.upsample, 
+                DoubleLightConv(32, 16)
+            ),  
+        ])
+        self.output = Sequential(
+            nn.Conv2d(in_channels=16, out_channels=1, kernel_size=1) 
+        )
+
+
+# DWConv(16, 16, 3), # <- Spatial refinement
+
+        ### Miscellaneous Section
+        
         self.sigmoid = nn.Sigmoid()
         self.resize = torchvision.transforms.Resize((40, 40), interpolation=torchvision.transforms.InterpolationMode.BILINEAR)
         self.verbose = verbose
@@ -106,7 +120,7 @@ class YOLOUSegPlusPlus(Module):
         self._indices = {
                 "upsample": set([2, 5, 6]),                
                 "skip_connections_encoder": set([2, 4]), 
-                "skip_connections_decoder": set([0, 3])}
+                "skip_connections_decoder": set([0, 2])}
 
                 ### FUTURE: ADAPT LATER
                 # "upsample": set([1, 3, 5, 7, 8]), 
@@ -185,8 +199,6 @@ class YOLOUSegPlusPlus(Module):
             if idx in self._indices.get("skip_connections_decoder"): 
                 skip = self.skip_connections.pop()
                 x = torch.concat([x, skip], dim=1)
-            if idx in self._indices.get("upsample"): 
-                x = self.upsample(x)
             x = module(x)
         out = self.output(x)
         return out
