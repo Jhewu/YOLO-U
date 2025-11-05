@@ -4,7 +4,7 @@ from dataset import CustomDataset
 
 import os
 import time
-from typing import Tuple, List
+from typing import Tuple, List, Union
 from itertools import cycle
 
 import torch
@@ -18,6 +18,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from monai.losses import DiceLoss
 from monai.metrics import DiceMetric
+
+from torchvision.transforms.functional import gaussian_blur
+import torchvision
 
 class Trainer: 
     def __init__(self,
@@ -198,17 +201,23 @@ class Trainer:
                             root_path = data_path, 
                             image_path = "images/train", 
                             objectmap_path = "objectmap/train", 
+                            # heatmap_path = "heatmap/train", 
                             mask_path = "masks/train",
-                            image_size = self.image_size, 
-                            objectmap_sizes = [20, 10])
+                            image_size = self.image_size,
+                            # heatmap_sizes = [20])
+                            # objectmap_sizes = [20, 10])
+                            objectmap_sizes = [20])
                             
         val_dataset = CustomDataset(
                             root_path = data_path, 
                             image_path = "images/val", 
                             objectmap_path = "objectmap/val",
+                            # heatmap_path = "heatmap/val", 
                             mask_path = "masks/val", 
                             image_size = self.image_size, 
-                            objectmap_sizes = [20, 10]) # MODIFIED TO INCLUDE P2
+                            # heatmap_sizes = [20])
+                            # objectmap_sizes = [20, 10]) # MODIFIED TO INCLUDE P2
+                            objectmap_sizes = [20])
 
         train_dataloader = DataLoader(dataset=train_dataset,
                                     batch_size=self.batch_size,
@@ -278,9 +287,13 @@ class Trainer:
         self.create_dir(model_dir)
 
         # Add seed for reproducibility
-        torch.manual_seed(42)
+        SEED = 42
+
+        # 3. Set PyTorch CPU and GPU seeds
+        torch.manual_seed(SEED)
         if torch.cuda.is_available():
-            torch.cuda.manual_seed(42)
+            # Sets seed for all available GPUs
+            torch.cuda.manual_seed_all(SEED)
 
         patience = 0 # --> local patience for early stopping
         for epoch in tqdm(range(self.epochs)):
@@ -333,10 +346,10 @@ class Trainer:
                 for idx, img_mask_heatmap in enumerate(tqdm(train_dataloader)):
                     img = img_mask_heatmap[0].float().to(self.device)
                     mask = img_mask_heatmap[1].float().to(self.device)
-                    heatmap = [heatmap.to(self.device) for heatmap in img_mask_heatmap[2]] # List of Tensors
-                    
+                    heatmaps = img_mask_heatmap[2][0].float().to(self.device)
+                 
                     optimizer.zero_grad()
-                    pred = self.model(img, heatmap)
+                    pred = self.model(img, heatmaps)
                     loss = self.loss(pred, mask)
 
                     train_running_loss += loss.item()
@@ -349,7 +362,7 @@ class Trainer:
                     pred_sigmoid = torch.nn.functional.sigmoid(pred)
                     pred_binary  = (pred_sigmoid > 0.5).float()
                     self.metric(pred_binary, mask)
-
+    
             end_time = time.time()
             train_loss = train_running_loss / (idx + 1)
             train_dice_metric = self.metric.aggregate().item()
@@ -361,9 +374,10 @@ class Trainer:
                 for idx, img_mask_heatmap in enumerate(tqdm(val_dataloader)):
                     img = img_mask_heatmap[0].float().to(self.device)
                     mask = img_mask_heatmap[1].float().to(self.device)
-                    heatmap = [heatmap.to(self.device) for heatmap in img_mask_heatmap[2]] # List of Tensors
                     
-                    pred = self.model(img, heatmap)
+                    heatmaps = img_mask_heatmap[2][0].float().to(self.device)
+                    
+                    pred = self.model(img, heatmaps)
                     loss = self.loss(pred, mask)
 
                     # Accumulate Loss and Metrics
@@ -403,6 +417,7 @@ class Trainer:
 
             print("-"*30)
             print(f"This is Patience {patience}")
+            print(f"This is Best Dice Score:  {best_val_metric}")
             print(f"Training Speed per EPOCH (in seconds): {end_time - start_time:.4f}")
             print(f"Maximum Gigabytes of VRAM Used: {torch.cuda.max_memory_reserved(self.device) * 1e-9:.4f}")
             print(f"Train Loss EPOCH {epoch+1}: {train_loss:.4f}")
@@ -417,6 +432,29 @@ class Trainer:
 
         torch.save(self.model.state_dict(), os.path.join(os.path.join(model_dir, "last.pth")))
         self.plot_loss_curves(save_path=dest_dir)
+
+def count_parameters(model: torch.nn.Module, only_trainable: bool = True) -> Union[int, List[int]]:
+    """
+    Counts the total number of parameters in a PyTorch model.
+
+    Args:
+        model (nn.Module): The PyTorch model instance (e.g., a loaded model or a custom nn.Module).
+        only_trainable (bool): If True, counts only parameters that require gradients (trainable).
+                               If False, returns a list: [trainable_params, total_params].
+
+    Returns:
+        Union[int, List[int]]: The total count of parameters (or a list if only_trainable is False).
+    """
+
+    # Generator expression to count trainable parameters
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    if only_trainable:
+        return trainable_params
+    else:
+        # Generator expression to count ALL parameters (trainable + fixed)
+        all_params = sum(p.numel() for p in model.parameters())
+        return [trainable_params, all_params]
 
 if __name__ == "__main__": 
     # Create trainer and predictor instances
@@ -433,9 +471,26 @@ if __name__ == "__main__":
     # Create YOLOU instance
     model = YOLOUSegPlusPlus(predictor=YOLO_predictor)
 
-    # for name, param in model.named_parameters():
-    #     if param.requires_grad:
-    #         print(name, param.shape)
+#     model_dir = "/home/jun/Desktop/inspirit/YOLOU-SegPlusPlus/runs/2025_11_04_11_14_07/weights/best.pth"
+# 
+#     # Load the checkpoint
+#     checkpoint = torch.load(model_dir, map_location=torch.device('cpu'))  # or 'cuda' if using GPU
+#     
+#     # If checkpoint is a state_dict directly:
+#     if 'state_dict' in checkpoint:
+#         state_dict = checkpoint['state_dict']
+#     else:
+#         state_dict = checkpoint
+#     
+#     # Load weights into the model
+#     model.load_state_dict(state_dict)
+
+    trainable_count = count_parameters(model, only_trainable=True)
+    all_counts = count_parameters(model, only_trainable=False)
+
+    print(f"Total Trainable Parameters: {trainable_count:,}")
+    print(f"Total All Parameters (Trainable + Fixed): {all_counts[1]:,}")
+    print("-" * 30)
             
     trainer = Trainer(model=model, 
                     data_path="data/stacked_segmentation", 
@@ -454,18 +509,3 @@ if __name__ == "__main__":
                     device = "cuda"
                     )
     trainer.train()
-
-#     model.to("cuda")
-# 
-#     x = torch.zeros(1, 4, 160, 160).to("cuda")
-#     x = model(x, x)
-
-    """TESTING
-
-    model.to("cuda")
-
-    x = torch.zeros(1, 4, 160, 160).to("cuda")
-    x = model(x, x)
-
-    """
-

@@ -35,8 +35,8 @@ def process_mask(protos, masks_in, bboxes, shape, upsample: bool = False):
     masks = crop_mask(masks, downsampled_bboxes)  # CHW
     if upsample:
         masks = F.interpolate(masks[None], shape, mode="bilinear", align_corners=False)[0]  # CHW
-    # return masks.gt_(0.0)
-    return masks
+    return masks.gt_(0.0)
+    # return masks
 
 def process_mask_native(protos, masks_in, bboxes, shape):
     """
@@ -55,8 +55,8 @@ def process_mask_native(protos, masks_in, bboxes, shape):
     masks = (masks_in @ protos.float().view(c, -1)).view(-1, mh, mw)
     masks = scale_masks(masks[None], shape)[0]  # CHW
     masks = crop_mask(masks, bboxes)  # CHW
-    # return masks.gt_(0.0)
-    return masks
+    return masks.gt_(0.0)
+    # return masks
 
 class CustomDetectionPredictor(CustomBasePredictor):
     """
@@ -258,56 +258,56 @@ class CustomSegmentationPredictor(CustomDetectionPredictor):
             for pred, orig_img, img_path, proto in zip(preds, orig_imgs, self.batch[0], protos)
         ]
 
+#     def construct_result(self, pred, img, orig_img, img_path, proto):
+#         """
+#         Construct a single result object from the prediction.
+# 
+#         Args:
+#             pred (np.ndarray): The predicted bounding boxes, scores, and masks.
+#             img (torch.Tensor): The image after preprocessing.
+#             orig_img (np.ndarray): The original image before preprocessing.
+#             img_path (str): The path to the original image.
+#             proto (torch.Tensor): The prototype masks.
+# 
+#         Returns:
+#             (Results): Result object containing the original image, image path, class names, bounding boxes, and masks.
+#         """
+#         if not len(pred):  # save empty boxes
+#             masks = None
+#         elif self.args.retina_masks:
+#             pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
+#             masks = process_mask_native(proto, pred[:, 6:], pred[:, :4], orig_img.shape[:2])  # HWC
+#         else:
+#             masks = process_mask(proto, pred[:, 6:], pred[:, :4], img.shape[2:], upsample=True)  # HWC
+#             pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
+#         if masks is not None:
+#             keep = masks.sum((-2, -1)) > 0  # only keep predictions with masks
+#             pred, masks = pred[keep], masks[keep]
+#         return Results(orig_img, path=img_path, names=self.model.names, boxes=pred[:, :6], masks=masks)
+
     def construct_result(self, pred, img, orig_img, img_path, proto):
-        """
-        Construct a single result object from the prediction.
+         """
+         Construct a single result object from the prediction.
 
-        Args:
-            pred (np.ndarray): The predicted bounding boxes, scores, and masks.
-            img (torch.Tensor): The image after preprocessing.
-            orig_img (np.ndarray): The original image before preprocessing.
-            img_path (str): The path to the original image.
-            proto (torch.Tensor): The prototype masks.
+         Args:
+             pred (np.ndarray): The predicted bounding boxes, scores, and masks.
+             img (torch.Tensor): The image after preprocessing.
+             orig_img (np.ndarray): The original image before preprocessing.
+             img_path (str): The path to the original image.
+             proto (torch.Tensor): The prototype masks.
 
-        Returns:
-            (Results): Result object containing the original image, image path, class names, bounding boxes, and masks.
-        """
-        if not len(pred):  # save empty boxes
-            masks = None
-        elif self.args.retina_masks:
-            pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
-            masks = process_mask_native(proto, pred[:, 6:], pred[:, :4], orig_img.shape[:2])  # HWC
-        else:
-            masks = process_mask(proto, pred[:, 6:], pred[:, :4], img.shape[2:], upsample=True)  # HWC
-            pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
-        if masks is not None:
-            keep = masks.sum((-2, -1)) > 0  # only keep predictions with masks
-            pred, masks = pred[keep], masks[keep]
-        return Results(orig_img, path=img_path, names=self.model.names, boxes=pred[:, :6], masks=masks)
-
-    # def construct_result(self, pred, img, orig_img, img_path, proto):
-    #     """
-    #     Construct a single result object from the prediction.
-
-    #     Args:
-    #         pred (np.ndarray): The predicted bounding boxes, scores, and masks.
-    #         img (torch.Tensor): The image after preprocessing.
-    #         orig_img (np.ndarray): The original image before preprocessing.
-    #         img_path (str): The path to the original image.
-    #         proto (torch.Tensor): The prototype masks.
-
-    #     Returns:
-    #         (Results): Result object containing the original image, image path, class names, bounding boxes, and masks.
-    #     """
-    #     if not len(pred):  # save empty boxes
-    #         masks = None
-    #     elif self.args.retina_masks:
-    #         pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
-    #         masks = ops.process_mask_native(proto, pred[:, 6:], pred[:, :4], orig_img.shape[:2])  # HWC
-    #     else:
-    #         masks = ops.process_mask(proto, pred[:, 6:], pred[:, :4], img.shape[2:], upsample=True)  # HWC
-    #         pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
-    #     if masks is not None:
-    #         keep = masks.sum((-2, -1)) > 0  # only keep predictions with masks
-    #         pred, masks = pred[keep], masks[keep]
-    #     return Results(orig_img, path=img_path, names=self.model.names, boxes=pred[:, :6], masks=masks)
+         Returns:
+             (Results): Result object containing the original image, image path, class names, bounding boxes, and masks.
+         """
+         if not len(pred):  # save empty boxes
+             masks = None
+         elif self.args.retina_masks:
+             pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
+             masks = ops.process_mask_native(proto, pred[:, 6:], pred[:, :4], orig_img.shape[:2])  # HWC
+         else:
+             masks = ops.process_mask(proto, pred[:, 6:], pred[:, :4], img.shape[2:], upsample=True)  # HWC
+             pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
+         if masks is not None:
+             keep = masks.sum((-2, -1)) > 0  # only keep predictions with masks
+             pred, masks = pred[keep], masks[keep]
+         return Results(orig_img, path=img_path, names=self.model.names, boxes=pred[:, :6], masks=masks)

@@ -48,7 +48,6 @@ class CustomDataset(Dataset):
         self.objectmap_sizes = objectmap_sizes
         
     def __getitem__(self, index) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
-        
         basename = self.basenames[index]
         
         # 1. Load Image and Mask
