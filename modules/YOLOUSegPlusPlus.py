@@ -12,7 +12,7 @@ from modules.eca import ECA
 
 import torchvision
 from torchvision.transforms import GaussianBlur
-from modules.unet_parts import DoubleLightConv, DoubleConv, GhostBlock
+from modules.unet_parts import DoubleLightConv, DoubleConv, GhostBlock, SingleLightConv
 
 class YOLOUSegPlusPlus(Module): 
     def __init__(self,
@@ -81,31 +81,31 @@ class YOLOUSegPlusPlus(Module):
         self.upsample = Upsample(scale_factor = 2, mode = "bilinear", align_corners = False)
 
         ### Lightweight Decoder
-        self.input = LightConv(1, 64) # 20x20 Spatial Resolution
+        self.input = SingleLightConv(1, 64) # 20x20 Spatial Resolution
         self.decoder = nn.ModuleList([
             Sequential( # <- Mixing (64 Input) + (128 Skip)
-                C3Ghost(64+128+1, 96), 
+                C3Ghost(128+64, 128), 
                 ECA(),
             ),
             Sequential( # <- Assume Upsample Here 20x20 -> 40x40
                 self.upsample,
-                DoubleLightConv(96, 64),
+                DoubleLightConv(128, 80),
             ), 
             Sequential( # <- Mixing (64 Input) + (64 Skip)
-                C3Ghost(64+64, 64),
+                C3Ghost(80+64, 96),
                 ECA(),
             ),
             Sequential( # <- Assume Upsample Here 40x40 -> 80x80
                 self.upsample, 
-                DoubleLightConv(64, 32)
+                DoubleLightConv(96, 80)
             ),
             Sequential( # <- Assume Upsample Here 80x80 -> 160x160
-                self.upsample, 
-                DoubleLightConv(32, 16)
+                Conv(80, 80, k=1), 
+                nn.PixelShuffle(2),
             ),  
         ])
         self.output = Sequential(
-            nn.Conv2d(in_channels=16, out_channels=1, kernel_size=1) 
+            nn.Conv2d(in_channels=20, out_channels=1, kernel_size=1) 
         )
 
 
@@ -114,7 +114,6 @@ class YOLOUSegPlusPlus(Module):
         ### Miscellaneous Section
         
         self.sigmoid = nn.Sigmoid()
-        self.resize = torchvision.transforms.Resize((40, 40), interpolation=torchvision.transforms.InterpolationMode.BILINEAR)
         self.verbose = verbose
         self.skip_connections = []
         self._indices = {

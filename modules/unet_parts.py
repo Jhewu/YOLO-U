@@ -57,6 +57,27 @@ class DoubleConv(nn.Module):
         out+=residual
         return self.activation(out)
 
+class SingleLightConv(nn.Module):
+    def __init__(self, in_channels, out_channels, k1=3):
+        super().__init__()
+        self.conv = LightConv(
+                c1=in_channels, 
+                c2=out_channels, 
+                k=k1, 
+                act=True)
+                
+        # 1x1 conv to match channels if needed
+        self.residual_conv = (
+            nn.Conv2d(in_channels, out_channels, kernel_size=1)
+            if in_channels != out_channels else nn.Identity()
+        )    
+
+    def forward(self, x):
+        residual = self.residual_conv(x)
+        out = self.conv(x)
+        out+=residual
+        return out
+
 class DoubleLightConv(nn.Module):
     def __init__(self, in_channels, out_channels, k1=3, k2=3):
         super().__init__()

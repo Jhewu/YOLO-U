@@ -509,7 +509,7 @@ if __name__ == "__main__":
 
                     early_stopping = True,
                     early_stopping_start = 50,
-                    patience = 5, 
+                    patience = 10, 
                     device = "cuda"
                     )
     trainer.train()
