@@ -20,8 +20,9 @@ from torchinfo import summary
 from tqdm import tqdm
 import pandas as pd
 import matplotlib.pyplot as plt
+
 from monai.losses import DiceLoss
-from monai.metrics import DiceMetric, HausdorffDistanceMetric, SurfaceDistanceMetric
+from monai.metrics import DiceMetric, HausdorffDistanceMetric
 
 class Trainer: 
     def __init__(self,
@@ -116,13 +117,6 @@ class Trainer:
             reduction = "none",
             get_not_nans = True, 
         )
-
-        # self.assd = SurfaceDistanceMetric(
-        #     include_background = False, 
-        #     symmetric = True, 
-        #     reduction = "none", 
-        #     get_not_nans = True,
-        # )
 
         self.image_size = image_size
         self.batch_size = batch_size
@@ -219,7 +213,6 @@ class Trainer:
                             mask_path = "masks/train",
                             image_size = self.image_size,
                             # heatmap_sizes = [20])
-                            # objectmap_sizes = [20, 10])
                             objectmap_sizes = [20])
                             
         val_dataset = CustomDataset(
@@ -230,7 +223,6 @@ class Trainer:
                             mask_path = "masks/val", 
                             image_size = self.image_size, 
                             # heatmap_sizes = [20])
-                            # objectmap_sizes = [20, 10]) # MODIFIED TO INCLUDE P2
                             objectmap_sizes = [20])
 
         train_dataloader = DataLoader(dataset=train_dataset,
@@ -272,30 +264,14 @@ class Trainer:
             if not name.startswith("encoder.")
         )
 
-        ### COMBINING BOTH (NO FREEZING) BUT FORCING ENCODER TO PARAM
-        # encoder_params = []
-        # for layer in self.model.encoder:
-        #     encoder_params += list(layer.parameters())
-        # optimizer = torch.optim.Adam(encoder_params + list(self.model.bottleneck.parameters()) + list(self.model.decoder.parameters()), lr=1e-3)
-
-        # for name in trainable_name:
-        #     print(f"{name}")
-
-        ### ORIGINAL NO FREEZING DONE
         optimizer = optim.AdamW(trainable_param, lr=self.lr)
-
-        ### ORIGINAL CONFIG WITH FREEZE, ONLY ADD GRADS TO BOTTLENECK AND DECODER, NOT ENCODER
-        # optimizer = torch.optim.Adam(
-        #     filter(lambda p: p.requires_grad, self.model.parameters()),
-        #     lr=1e-4
-        # )
         
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.epochs)
         scaler = GradScaler(self.device) # --> mixed precision
 
         # Initialize variables for callbacks
-        self.history = dict(train_loss=[], val_loss=[], train_dice_metric=[], val_dice_metric=[], val_hd95_metric=[], val_recall=[], val_precision=[])
-        best_val_metric = float("-inf")
+        self.history = dict(train_loss=[], val_loss=[], train_dice_metric=[], val_dice_metric=[], val_hd95_metric=[], val_precision=[], val_recall=[])
+        best_val_dice_metric = float("-inf")
 
         # Create result directory
         dest_dir = f"runs/{self.get_current_time()}" 
@@ -318,10 +294,8 @@ class Trainer:
         for epoch in tqdm(range(self.epochs)):
             self.model.train()
             self.dice_metric.reset()
-            # self.hd95.reset()
-            # self.assd.reset()
         
-            start_time = time.time()
+            train_start_time = time.time()
             train_running_loss = 0
             train_running_dice_metric = 0
 
@@ -358,15 +332,11 @@ class Trainer:
 
                     # Accumulate loss and metrics
                     train_running_loss += loss.item()
-                    
+
+                    # Update metrics
                     pred_sigmoid = torch.nn.functional.sigmoid(pred)
                     pred_binary  = (pred_sigmoid > 0.5).float()
                     self.dice_metric(pred_binary, mask)
-                    # pred_hot_encoded = torch.cat([1 - pred_binary, pred_binary], dim=1)
-                    # mask_hot_encoded = torch.cat([1 - mask, mask], dim=1)
-                    # 
-                    # self.hd95(pred_hot_encoded, mask_hot_encoded)
-                    # self.assd(pred_hot_encoded, mask_hot_encoded)
 
             else:
                 for idx, img_mask_heatmap in enumerate(tqdm(train_dataloader)):
@@ -388,37 +358,17 @@ class Trainer:
                     pred_sigmoid = torch.nn.functional.sigmoid(pred)
                     pred_binary  = (pred_sigmoid > 0.5).float()
                     self.dice_metric(pred_binary, mask)
-                    # pred_hot_encoded = torch.cat([1 - pred_binary, pred_binary], dim=1)
-                    # mask_hot_encoded = torch.cat([1 - mask, mask], dim=1)
-                    
-                    # self.hd95(pred_hot_encoded, mask_hot_encoded)
-                    # self.assd(pred_hot_encoded, mask_hot_encoded)
     
-            end_time = time.time()
+            train_end_time = time.time()
             train_loss = train_running_loss / (idx + 1)
-
-            # Dice Metric
             train_dice_metric = self.dice_metric.aggregate().item()
-
-            # HD95 Metric
-            # hd95_raw_results, hd95_not_nans_count = self.hd95.aggregate()
-            # is_valid = hd95_not_nans_count.bool()
-            # successful_hd95_values = hd95_values[is_valid]
-            # train_hd95_metric = torch.mean(successful_hd95_values).item()
-
-            # ASSD Metric
-            # assd_raw_results, assd_not_nans_count = self.assd.aggregate()
-            # is_valid = assd_not_nans_count.bool()
-            # successful_assd_values = assd_values[is_valid]
-            # train_assd_metric = torch.mean(successful_assd_values).item()
             
             self.dice_metric.reset() # <- Reset again
-            self.hd95.reset()
-            precision = recall = 0
+            self.hd95.reset()        # <- Reset again
             
-
+            val_running_loss = val_precision = val_recall = 0
+            val_start_time = time.time()
             self.model.eval()
-            val_running_loss = 0
             with torch.no_grad():
                 for idx, img_mask_heatmap in enumerate(tqdm(val_dataloader)):
                     img = img_mask_heatmap[0].float().to(self.device)
@@ -435,23 +385,21 @@ class Trainer:
                     pred_binary  = (pred_sigmoid > 0.5).float()
                     self.dice_metric(pred_binary, mask)   
 
+                    # Calculate Precision and Recall
                     TP = (pred_binary * mask).sum().float()
                     FP = (pred_binary * (1 - mask)).sum().float()
                     FN = ((1 - pred_binary) * mask).sum().float()
-                    precision+=TP / (TP + FP + 1e-6).item()
-                    recall+=TP / (TP + FN + 1e-6).item()
-                    
+                    val_precision+=TP / (TP + FP + 1e-6).item()
+                    val_recall+=TP / (TP + FN + 1e-6).item()
+
+                    # Calculate HD95
                     pred_hot_encoded = torch.cat([1 - pred_binary, pred_binary], dim=1)
-                    mask_hot_encoded = torch.cat([1 - mask, mask], dim=1)
-                    
+                    mask_hot_encoded = torch.cat([1 - mask, mask], dim=1)                    
                     self.hd95(pred_hot_encoded, mask_hot_encoded)
-                    # self.assd(pred_hot_encoded, mask_hot_encoded)        
 
                 val_loss = val_running_loss / (idx + 1)
-                precision = precision / (idx + 1)
-                recall = recall / (idx + 1)
-
-                # Dice Metric
+                val_precision = val_precision / (idx + 1)
+                val_recall = val_recall / (idx + 1)
                 val_dice_metric = self.dice_metric.aggregate().item()
 
                 # HD95 Metric
@@ -460,12 +408,7 @@ class Trainer:
                 successful_hd95_values = hd95_raw_results[is_valid]
                 val_hd95_metric = torch.mean(successful_hd95_values).item()
 
-                # ASSD Metric
-                # assd_raw_results, assd_not_nans_count = self.assd.aggregate()
-                # is_valid = assd_not_nans_count.bool()
-                # successful_assd_values = assd_raw_results[is_valid]
-                # val_assd_metric = torch.mean(successful_assd_values).item()
-            
+            val_end_time = time.time()
             # Update the scheduler
             scheduler.step()
             
@@ -474,19 +417,18 @@ class Trainer:
             self.history["val_loss"].append(val_loss)
             self.history["train_dice_metric"].append(train_dice_metric)
             self.history["val_dice_metric"].append(val_dice_metric)
-            # self.history["train_hd95_metric"].append(train_hd95_metric)
             self.history["val_hd95_metric"].append(val_hd95_metric)
-            self.history["val_precision"].append(precision)
-            self.history["val_recall"].append(recall)
+            self.history["val_precision"].append(val_precision)
+            self.history["val_recall"].append(val_recall)
                         
-            if val_dice_metric > best_val_metric: 
-                if abs(best_val_metric - val_dice_metric) > 1e-3:
-                    print(f"Validation Dice Metric improved from {best_val_metric:.4f} to {val_dice_metric:.4f}. Saving model...")
+            if val_dice_metric > best_val_dice_metric: 
+                if abs(best_val_dice_metric - val_dice_metric) > 1e-3:
+                    print(f"Validation Dice Metric improved from {best_val_dice_metric:.4f} to {val_dice_metric:.4f}. Saving model...")
                     best_val_metric = val_dice_metric
                     torch.save(self.model.state_dict(), os.path.join(os.path.join(model_dir, "best.pth")))
                     patience = 0
                 else: 
-                    print(f"Validation Dice Metric improved slightly from {best_val_metric:.4f} to {val_dice_metric:.4f}, but not significantly enough to reset patience.")
+                    print(f"Validation Dice Metric improved slightly from {best_val_dice_metric:.4f} to {val_dice_metric:.4f}, but not significantly enough to reset patience.")
                     torch.save(self.model.state_dict(), os.path.join(os.path.join(model_dir, "best.pth")))
                     if epoch+1 >= self.early_stopping_start: 
                         patience+=1
@@ -498,22 +440,28 @@ class Trainer:
             history_df.to_csv(os.path.join(dest_dir, "history.csv"), index=False)
 
             print("-"*30)
-            print(f"This is Best Val Dice Score:  {best_val_metric}")
+            print(f"This is Best Val Dice Score:  {best_val_dice_metric}")
             print(f"This is Patience {patience}")
-            print(f"Training Speed per EPOCH (in seconds): {end_time - start_time:.4f}")
+            print(f"Training Speed per EPOCH (in seconds): {train_end_time - train_start_time:.4f}")
+            print(f"Validation Speed per EPOCH (in seconds): {val_end_time - val_start_time:.4f}")
+            
             print(f"Maximum Gigabytes of VRAM Used: {torch.cuda.max_memory_reserved(self.device) * 1e-9:.4f}")
+            
             print(f"Train Loss EPOCH {epoch+1}: {train_loss:.4f}")
             print(f"Valid Loss EPOCH {epoch+1}: {val_loss:.4f}")
+            
             print(f"Train DICE Score EPOCH {epoch+1}: {train_dice_metric:.4f}")
             print(f"Valid DICE Score EPOCH {epoch+1}: {val_dice_metric:.4f}")
-            print(f"Valid HD95 Score EPOCH {epoch+1}: {val_hd95_metric}")
-            print(f"Valid Precision Score EPOCH {epoch+1}: {precision}")
-            print(f"Valid Recall Score EPOCH {epoch+1}: {recall}")
+            
+            print(f"Valid HD95 Score EPOCH {epoch+1}: {val_hd95_metric:.4f}")
+            
+            print(f"Valid Precision Score EPOCH {epoch+1}: {val_precision:.4f}")
+            print(f"Valid Recall Score EPOCH {epoch+1}: {val_recall:.4f}")
 
             print("-"*30)
 
             if patience >= self.patience: 
-                print(f"\nEARLY STOPPING: Valid Loss did not improve since epoch {epoch+1-patience} with Validation Dice Metric {best_val_metric}, terminating training...")
+                print(f"\nEARLY STOPPING: Valid Loss did not improve since epoch {epoch+1-patience} with Validation Dice Metric {best_val_dice_metric}, terminating training...")
                 break
 
         torch.save(self.model.state_dict(), os.path.join(os.path.join(model_dir, "last.pth")))
@@ -602,6 +550,7 @@ def modify_YOLO(model):
     print("✅ Model's first 'Conv' module successfully modified.")
     print(f"   - New input channels: 4")
     print(f"   - Original output channels: {out_channels}")
+    
 if __name__ == "__main__": 
     # Create trainer and predictor instances
     p_args = dict(model="yolo_checkpoint/weights/best.pt",
