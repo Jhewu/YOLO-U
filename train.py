@@ -8,6 +8,7 @@ from torch import nn
 import os
 import time
 from typing import Tuple, List, Union
+from shutil import copy
 from itertools import cycle
 
 import torch
@@ -287,6 +288,9 @@ class Trainer:
         dest_dir = f"runs/{self.get_current_time()}" 
         model_dir = os.path.join(dest_dir, "weights")
         self.create_dir(model_dir)
+
+        # Copy model file to destination
+        copy("YOLOSegPlusPlus.py", os.path.join(dest_dir, "YOLOSegPlusPlus.py"))
 
         # Add seed for reproducibility
         SEED = 42
