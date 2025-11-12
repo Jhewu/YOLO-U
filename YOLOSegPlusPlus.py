@@ -1,20 +1,93 @@
-from torch.nn import Sequential, Module, Upsample
-from torch import nn
-import torch
-
 from typing import List
-
 from ultralytics.nn.modules import C3Ghost, DWConv, C2f, DWConvTranspose2d, Conv, C3k2, ConvTranspose, CBAM, LightConv
 
 # local/custom scripts
 from custom_yolo_predictor.custom_detseg_predictor import CustomDetectionPredictor
-from modules.eca import ECA
 
-import torchvision
-from torchvision.transforms import GaussianBlur
-from modules.unet_parts import DoubleLightConv, DoubleConv, GhostBlock, SingleLightConv
+import torch
+import torch.nn as nn
+from torch.nn import Sequential, Module, Upsample, Conv2d, Conv1d, Identity, AdaptiveAvgPool2d
+import torch.nn.functional as F
 
-class YOLOUSegPlusPlus(Module): 
+class SingleLightConv(Module):
+    def __init__(self, in_channels, out_channels, k1=3):
+        super().__init__()
+        self.conv = LightConv(
+                c1=in_channels, 
+                c2=out_channels, 
+                k=k1, 
+                act=True)
+                
+        # 1x1 conv to match channels if needed
+        self.residual_conv = (
+            Conv2d(in_channels, out_channels, kernel_size=1)
+            if in_channels != out_channels else nn.Identity()
+        )    
+
+    def forward(self, x):
+        residual = self.residual_conv(x)
+        out = self.conv(x)
+        out+=residual
+        return out
+
+class DoubleLightConv(Module):
+    def __init__(self, in_channels, out_channels, k1=3, k2=3):
+        super().__init__()
+        self.conv = Sequential(
+            LightConv(
+                c1=in_channels, 
+                c2=out_channels, 
+                k=k1, 
+                act=True), 
+            LightConv(
+                c1=out_channels, 
+                c2=out_channels, 
+                k=k2, 
+                act=True))
+                
+        # 1x1 conv to match channels if needed
+        self.residual_conv = (
+            Conv2d(in_channels, out_channels, kernel_size=1)
+            if in_channels != out_channels else Identity()
+        )    
+
+    def forward(self, x):
+        residual = self.residual_conv(x)
+        out = self.conv(x)
+        out+=residual
+        return out
+
+class ECA(Module):
+    def __init__(self, k_size: int = 3):
+        super(ECA, self).__init__()
+        """
+        Constructs a ECA module. Efficient Channel Attention for Conv
+
+        Args: 
+            k_size (int): kernel size for Conv1d
+        """
+        self.avg_pool = AdaptiveAvgPool2d(1)
+        self.conv = Conv1d(1, 1, kernel_size=k_size, padding=(k_size - 1) // 2, bias=False) 
+
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        """
+        Args: 
+            x (torch.tensor): input tensor (after mask + x concat)
+        Returns:
+            (torch.tensor)  : output tensor (same dimensions as input tensor but with attention applied)
+        """
+        # feature descriptor on the global spatial information
+        y = self.avg_pool(x)
+
+        # Two different branches of ECA module
+        y = self.conv(y.squeeze(-1).transpose(-1, -2)).transpose(-1, -2).unsqueeze(-1)
+
+        # Multi-scale information fusion
+        y = torch.sigmoid(y)
+
+        return x * y.expand_as(x)
+
+class YOLOSegPlusPlus(Module): 
     def __init__(self,
                  predictor: CustomDetectionPredictor,
                  verbose: bool = False,
@@ -73,47 +146,43 @@ class YOLOUSegPlusPlus(Module):
         super().__init__()
         ### YOLO predictor and backbone
         # self.yolo_predictor = predictor.model.model         # <- For inference
+
         self.encoder = nn.ModuleList(module for module in predictor.model.model.model[0:5]) 
         for param in self.encoder.parameters(): # <- Frozen
             param.requires_grad = False
         self.encoder.eval() 
 
         self.upsample = Upsample(scale_factor = 2, mode = "bilinear", align_corners = False)
-
-        ### Lightweight Decoder
-        self.input = SingleLightConv(1, 64) # 20x20 Spatial Resolution
+        # self.input = DoubleLightConv(1, 64) # 20x20 Spatial Resolution
         self.decoder = nn.ModuleList([
             Sequential( # <- Mixing (64 Input) + (128 Skip)
-                C3Ghost(128+64, 128), 
+                C3Ghost(128, 96, n=1), # +1 
                 ECA(),
             ),
             Sequential( # <- Assume Upsample Here 20x20 -> 40x40
                 self.upsample,
-                DoubleLightConv(128, 80),
+                DoubleLightConv(96, 64),
             ), 
             Sequential( # <- Mixing (64 Input) + (64 Skip)
-                C3Ghost(80+64, 96),
+                C3Ghost(64+64, 64),
                 ECA(),
             ),
-            Sequential( # <- Assume Upsample Here 40x40 -> 80x80
+            Sequential( # <- Assume Upsample Here 40x40 -> 80x80 + (32 Skip)
+                # C3Ghost(64+32, 32),
                 self.upsample, 
-                DoubleLightConv(96, 80)
+                # LightConv(32, 32, k=3, act=True)
+                DoubleLightConv(64, 32)
             ),
-            Sequential( # <- Assume Upsample Here 80x80 -> 160x160
-                Conv(80, 80, k=1), 
-                nn.PixelShuffle(2),
+            Sequential( # <- Assume Upsample Here 80x80 -> 160x160 + (16 Skip)
+                self.upsample, 
+                DoubleLightConv(32, 16)
             ),  
         ])
-        self.output = Sequential(
-            nn.Conv2d(in_channels=20, out_channels=1, kernel_size=1) 
-        )
-
-
-# DWConv(16, 16, 3), # <- Spatial refinement
-
-        ### Miscellaneous Section
+        self.output = nn.Conv2d(in_channels=16, out_channels=1, kernel_size=1) 
         
+        ### Miscellaneous Section
         self.sigmoid = nn.Sigmoid()
+        self.param = nn.Parameter(torch.tensor([5.0]))
         self.verbose = verbose
         self.skip_connections = []
         self._indices = {
@@ -193,11 +262,15 @@ class YOLOUSegPlusPlus(Module):
                 self.skip_connections.append(x) # <- Manually cache tensors for skips
 
         # Decoder (trainable)
-        x = self.input(logits)
         for idx, module in enumerate(self.decoder): 
+        
             if idx in self._indices.get("skip_connections_decoder"): 
                 skip = self.skip_connections.pop()
-                x = torch.concat([x, skip], dim=1)
+                if idx == 0: 
+                    # x = torch.concat([skip, logits], dim=1)
+                    pass
+                else: 
+                    x = torch.concat([x, skip], dim=1)
             x = module(x)
         out = self.output(x)
         return out

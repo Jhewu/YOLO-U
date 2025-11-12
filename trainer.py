@@ -1,4 +1,4 @@
-from modules.YOLOUSegPlusPlus import YOLOUSegPlusPlus
+from YOLOSegPlusPlus import YOLOSegPlusPlus
 from custom_yolo_predictor.custom_detseg_predictor import CustomSegmentationPredictor
 from dataset import CustomDataset
 
@@ -310,7 +310,7 @@ class Trainer:
                 for idx, img_mask_heatmap in enumerate(tqdm(train_dataloader)):
                     img = img_mask_heatmap[0].float().to(self.device)
                     mask = img_mask_heatmap[1].float().to(self.device)
-                    heatmaps = img_mask_heatmap[2][0].float().to(self.device)
+                    heatmaps = img_mask_heatmap[2].float().to(self.device)
                     optimizer.zero_grad()
                     with torch.amp.autocast(device_type=self.device): 
                         pred = self.model(img, heatmaps)
@@ -348,7 +348,7 @@ class Trainer:
                 for idx, img_mask_heatmap in enumerate(tqdm(train_dataloader)):
                     img = img_mask_heatmap[0].float().to(self.device)
                     mask = img_mask_heatmap[1].float().to(self.device)
-                    heatmaps = img_mask_heatmap[2][0].float().to(self.device)
+                    heatmaps = img_mask_heatmap[2].float().to(self.device)
                  
                     optimizer.zero_grad()
                     pred = self.model(img, heatmaps)
@@ -377,7 +377,7 @@ class Trainer:
                     img = img_mask_heatmap[0].float().to(self.device)
                     mask = img_mask_heatmap[1].float().to(self.device)
                     
-                    heatmaps = img_mask_heatmap[2][0].float().to(self.device)
+                    heatmaps = img_mask_heatmap[2].float().to(self.device)
                     
                     pred = self.model(img, heatmaps)
                     loss = self.loss(pred, mask)
@@ -458,6 +458,69 @@ def count_parameters(model: torch.nn.Module, only_trainable: bool = True) -> Uni
         all_params = sum(p.numel() for p in model.parameters())
         return [trainable_params, all_params]
 
+
+from ultralytics.nn.modules import Conv
+from torch import nn
+def modify_YOLO(model): 
+    old_conv_module = model.model.model.model[0]
+    print(old_conv_module)
+
+    # 3. Get the inner nn.Conv2d layer and its weights
+    old_nn_conv = old_conv_module.conv
+    old_conv_weights = old_nn_conv.weight.data 
+
+    # --- Setup for the new Conv module ---
+
+    # 5. Determine the new nn.Conv2d layer parameters
+    # c2 (output channels) comes from the old nn.Conv2d layer
+    out_channels = old_nn_conv.out_channels
+    # Other parameters from the old nn.Conv2d layer
+    kernel_size = old_nn_conv.kernel_size
+    stride = old_nn_conv.stride
+    padding = old_nn_conv.padding
+    dilation = old_nn_conv.dilation
+    groups = old_nn_conv.groups
+    # Note: YOLO's Conv sets bias=False, so we skip transferring it.
+
+    # 6. Create the new 4-channel nn.Conv2d layer
+    new_nn_conv = nn.Conv2d(
+        in_channels=4,  # Change from 3 to 4
+        out_channels=out_channels,
+        kernel_size=kernel_size,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        groups=groups,
+        bias=False # Must match the original YOLO structure
+    )
+
+    # 7. Initialize the new Conv weights tensor
+    # Shape: [out_channels, in_channels (4), kernel_height, kernel_width]
+    new_conv_weights = new_nn_conv.weight.data
+
+    # 8. Transfer the original 3-channel weights (RGB)
+    new_conv_weights[:, 0:3, :, :] = old_conv_weights[:, 0:3, :, :]
+
+    # 9. Calculate and set the average for the 4th channel
+    # Calculate the mean across the input channel dimension (dim=1) of the old weights
+    avg_weights = old_conv_weights.mean(dim=1, keepdim=True) 
+    # Copy the averaged 3-channel weights to the 4th channel (index 3)
+    new_conv_weights[:, 3:4, :, :] = avg_weights
+
+    # 10. Reconstruct the entire Conv module (and keep the original BN and ACT)
+    # We can't easily instantiate the original 'Conv' class without the source file 
+    # and 'autopad' function, so we modify the existing module's components.
+
+    # Set the new nn.Conv2d layer into the existing Conv module
+    old_conv_module.conv = new_nn_conv
+
+    # The BN and ACT layers remain unchanged, which is correct because they operate 
+    # on the 'out_channels', which hasn't changed (it's still 16 in your example).
+    # You must ensure the BN's num_features matches the Conv's out_channels.
+
+    print("✅ Model's first 'Conv' module successfully modified.")
+    print(f"   - New input channels: 4")
+    print(f"   - Original output channels: {out_channels}")
 if __name__ == "__main__": 
     # Create trainer and predictor instances
     p_args = dict(model="yolo_checkpoint/weights/best.pt",
@@ -469,25 +532,12 @@ if __name__ == "__main__":
     # Create predictor and Load checkpoint
     YOLO_predictor = CustomSegmentationPredictor(overrides=p_args)
     YOLO_predictor.setup_model(p_args["model"])
+    modify_YOLO(YOLO_predictor)
 
     # Create YOLOU instance
     model = YOLOUSegPlusPlus(predictor=YOLO_predictor)
 
     YOLO_predictor.model.to('cpu')
-
-#     model_dir = "/home/jun/Desktop/inspirit/YOLOU-SegPlusPlus/runs/2025_11_04_11_14_07/weights/best.pth"
-# 
-#     # Load the checkpoint
-#     checkpoint = torch.load(model_dir, map_location=torch.device('cpu'))  # or 'cuda' if using GPU
-#     
-#     # If checkpoint is a state_dict directly:
-#     if 'state_dict' in checkpoint:
-#         state_dict = checkpoint['state_dict']
-#     else:
-#         state_dict = checkpoint
-#     
-#     # Load weights into the model
-#     model.load_state_dict(state_dict)
 
     trainable_count = count_parameters(model, only_trainable=True)
     all_counts = count_parameters(model, only_trainable=False)

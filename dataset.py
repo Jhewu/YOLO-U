@@ -74,19 +74,20 @@ class CustomDataset(Dataset):
             objectmap_tensors = []
             
             # Construct the pre-saved heatmap filename: filename_size.png
-            objectmap_filename = f"{basename}_{20}.png"
+            objectmap_filename = f"{basename}_{20}.pt"
             objectmap_path = self.objectmap_dir + objectmap_filename
             
             # Load the pre-resized objectmap (L/Grayscale)
-            objectmap_np = cv2.imread(objectmap_path, cv2.IMREAD_GRAYSCALE)
+            # objectmap_np = cv2.imread(objectmap_path, cv2.IMREAD_GRAYSCALE)
             
             # Since the objectmap is assumed to be the correct size, just convert to tensor.
             # Convert to [1, H, W] tensor
-            objectmap_tensor = self.to_tensor(objectmap_np)
+            # objectmap_tensor = self.to_tensor(objectmap_np)
+            objectmap_tensor = torch.load(objectmap_path).squeeze(0)
             
-            objectmap_tensors.append(objectmap_tensor)
+            # objectmap_tensors.append(objectmap_tensor)
             
-            return img_tensor, mask_tensor, objectmap_tensors
+            return img_tensor, mask_tensor, torch.sigmoid(objectmap_tensor)
         else: # Inference: no heatmaps
             return img_tensor, mask_tensor
             

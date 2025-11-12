@@ -1,16 +1,6 @@
-# YOLOU-Seg++: an Improved 1.5 Stage YOLO Segmentation Model (for BraTS-SSA) in PyTorch 
-**YOLOU-Seg++** is an improved "1.5 stage" YOLO segmentation model that leverages YOLO's strenghts in classification and location strength, and UNet-like strength in pixel-level segmentation, with a smart tensor caching mechanism, that improves over vanilla YOLO segmentation, and serves as an "add-in" module to convert a strong YOLO detection model into a segmentation model. Whereas YOLO segmentation models are often constraint by the bbox produced by the detect branch (for efficiency reasons), YOLOU-Seg++ fuses the bounding box at skip connections as a gating/suggestive mechanism, allowing the model full context of the image. 
+# YOLO-Seg++: Lighter, Higher-Quality YOLO-Based Brain Tumor Segmentation for Low-Resource Environment (BraTS-SSA)
 
-**[INSERT YOLOU-SEG++ DIAGRAM]**
-
-YOLOU-Seg++ performs 1.5 passes: 
-
-	(1) **1st Pass**: forward pass with  YOLOv12, caching  the bbox coordinates, backbone output tensors and downsampled tensors (for skip connections). 
-	(2) **0.5 Pass**: forward pass (with the backbone output tensors) to the CSP bottleneck, and then decoder, where skip connections concatenates with backbone downsampled tensors and with the bbox coordinates (spatial guidance)
-
-This caching mechanism, allows for more savings on "compute" on both inference and training. For inference, we only perform a single YOLOv12 forward pass, providing the necessary tensors for YOLOU-Seg++ inference (YOLOv12 backbone act as the encoder to our UNet like architecture). For training, we will only be training the YOLOU-Seg++ bottleneck and decoder (since the backbone is already converged). 
-
-The goal of this architecture, it's to create an efficient Brain Tumor Segmentation model for the BraTS-SSA (in low resource and compute environment), that also achieves competitive DICE and Hausffdorf score, and to serve as a "add-in" module for a strong YOLO detection model, where the researcher wishes to transform it into a segmentation model, with minimal training. 
+**WORK IN PROGFESS** Current state-of-the-art brain tumor segmentation and semantic segmentation models rely on expensive 3D tensor and self-attention (Transformer) calculations. While a better-performing model can always be found with access to computing, these models cannot be deployed in low-resource settings or edge devices. Current low-parameter segmentation models, such as YOLOv12n-seg, perform great on day-to-day low-risk tasks; however, their segmentation quality suffers greatly and cannot be relied on for high-risk scenarios such as brain tumor segmentation, opening areas for exploration. To address the challenge of efficient and accurate medical image segmentation, we propose YOLO-Seg++, a lightweight, parameter-efficient (2.6M + 80K) segmentation model that outperforms YOLOv12Seg (2.9M) and vanilla UNet (7M) with Dice Scores of 0.81, 0.84, and 0.87 for whole tumors, respectively, on the BraTS-SSA dataset. YOLO-Seg++ leverages the logits from a YOLO detection model, which our analysis shows to encode strong spatial localization cues of tumor regions, as a semantic bottleneck. These logits are integrated with YOLO’s backbone “skip” features to form a compact UNet-like architecture. By combining YOLO’s strength in detection and localization with UNet’s pixel-level precision, our approach enables the conversion of a strong YOLO detector (transfer learning) into an equally strong segmentation model with minimal additional parameters and near-native CPU inference performance. Decoupling the YOLO detector and segmentation head further enhances this adaptability, allowing task-specific loss optimization beyond YOLO’s coupled training objective. Efficient and accurate brain tumor segmentation can be achieved with the YOLO-Seg++ architecture, using pre-existing and well-established research on model architectural design. Further research in data augmentation, customized loss functions, advanced hyperparameter search, and ultimately architectural refinement can improve and suggest potential for future clinical adaptation pending further validation.
 
 ## 📁 Structure
 ```
@@ -25,4 +15,4 @@ The goal of this architecture, it's to create an efficient Brain Tumor Segmentat
 ├── trainer.py				# YOLOU trainer
 ```
 
-## WORK IN PROGRESS
+## REPOSITORY IS WORK IN PROGRESS

@@ -4,8 +4,9 @@ from dataset import CustomDataset
 
 import os
 import time
-from typing import Tuple, List
+from typing import Tuple, List, Union
 from itertools import cycle
+from nms import non_max_suppression
 
 import torch
 from torch.amp import GradScaler
@@ -58,7 +59,7 @@ class Evaluator:
         self.batch_size = batch_size
 
     
-    def spatial_confidence(self, logits: torch.tensor, k_frac: float = 0.05):
+    def spatial_confidence(self, logits: torch.tensor, k_frac: float = 0.20):
         """
 
         """
@@ -93,11 +94,12 @@ class Evaluator:
                             mask_path = f"masks/{split}", 
                             objectmap_path = f"objectmap/{split}",
                             image_size = self.image_size, 
-                            objectmap_sizes = [])
+                            objectmap_sizes = [20])
 
         test_dataloader = DataLoader(dataset=test_dataset,
                                     batch_size=self.batch_size,
-                                    shuffle=False)
+                                    shuffle=False, 
+                                    num_workers=8)
         return test_dataloader
     
     def evaluate(self) -> None: 
@@ -109,7 +111,7 @@ class Evaluator:
         self.model.eval()
 
         # Creates the dataloader
-        test_dataloader = self.create_dataloader(data_path=self.data_path, split="val")
+        test_dataloader = self.create_dataloader(data_path=self.data_path, split="test")
 
         # Set PyTorch CPU and GPU seeds
         SEED = 42
@@ -120,31 +122,45 @@ class Evaluator:
 
         self.metric.reset()
         start_time = time.time()
-        for idx, img_mask_heatmap in enumerate(tqdm(test_dataloader)):
-            with torch.no_grad():
-                for idx, img_mask_heatmap in enumerate(tqdm(val_dataloader)):
-                    img = img_mask_heatmap[0].float().to(self.device)
-                    mask = img_mask_heatmap[1].float().to(self.device)
+        
+        with torch.no_grad():
+            for idx, img_mask_heatmap in enumerate(tqdm(test_dataloader)):
+                img = img_mask_heatmap[0].float().to(self.device)
+                mask = img_mask_heatmap[1].float().to(self.device)
+                logitsa = img_mask_heatmap[2][0].float().to(self.device)
+                # logitsa.squeeze(0)
 
-                    ### YOLO inference
-                    yolo_out = self.model.yolo_predictor(img)
-                    detect_branch, cls_branch = yolo_out
-                    logits = cls_branch[0][:, -1:] # <- Extract last item
-                    
-                    ### Calculate the confidence    
-                    conf = self.spatial_confidence(logits)
+                ### YOLO inference
+                # yolo_out = self.model.yolo_predictor(img)
+                yolo_out = YOLO_predictor.model(img)
+                detect_branch, clsq_branch = yolo_out
+                a, b, c = cls_branch
+                # logits = cls_branch[0][:, -1:] # <- Extract last item
+                logitsb = a[:, -1:] # <- Extract last item
 
-                    if confidence <= 0.5: 
-                        pred = torch.zeros(1, 1, self.image_size, self.image_size)
-                    else:
-                        pred = self.model(img, logits)
-                        pred_sigmoid = torch.nn.functional.sigmoid(pred)
-                        pred_binary  = (pred_sigmoid > 0.5).float()
-                    
-                    self.metric(pred_binary, mask)             
-                val_dice_metric = self.metric.aggregate().item()
+                print(logitsa.max(), logitsa.min(), logitsa.mean())
+                print(logitsb.max(), logitsb.min(), logitsa.mean())
+                print()
 
-        print(f"Final Dice Metric: {val_dice_metric}...")
+                ### Calculate the confidence    
+                # out = non_max_suppression(detect_branch)[0]
+
+                # if len(out) == 0: 
+                #     pred_binary = torch.zeros(1, 1, self.image_size, self.image_size).to(self.device)
+                # else: 
+                #     conf = out[0][4]
+                        
+                    # if conf <= 0.45: 
+                        # pred_binary = torch.zeros(1, 1, self.image_size, self.image_size).to(self.device)
+                    # else:
+                        # pred = self.model(img, logits)
+                        # pred_sigmoid = torch.nn.functional.sigmoid(pred)
+                        # pred_binary  = (pred_sigmoid > 0.5).float()
+            
+                # self.metric(pred_binary, mask)             
+            # val_dice_metric = self.metric.aggregate().item()
+
+        # print(f"Final Dice Metric: {val_dice_metric}...")
 
 def count_parameters(model: torch.nn.Module, only_trainable: bool = True) -> Union[int, List[int]]:
     """
@@ -183,6 +199,19 @@ if __name__ == "__main__":
 
     # Create YOLOU instance
     model = YOLOUSegPlusPlus(predictor=YOLO_predictor)
+    # YOLO_predictor.model.to("cpu") # <- Move to CPU since we are not using it
+    
+    # Load the checkpoint
+    checkpoint = torch.load("2025_11_05_11_27_04/weights/best.pth", map_location=torch.device('cuda'))  # or 'cuda' if using GPU
+        
+    # If checkpoint is a state_dict directly:
+    if 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+    else:
+        state_dict = checkpoint
+        
+    # Load weights into the model
+    model.load_state_dict(state_dict)
 
     trainable_count = count_parameters(model, only_trainable=True)
     all_counts = count_parameters(model, only_trainable=False)

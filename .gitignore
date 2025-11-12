@@ -4,3 +4,4 @@ yolo_checkpoint/*
 archive/
 prev*/
 archive_runs/
+trained*/

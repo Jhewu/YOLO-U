@@ -93,19 +93,19 @@ def generate_objectmaps():
 
             # Apply Sigmoid
             # twenty, ten = torch.sigmoid(twenty[:, -1:]), torch.sigmoid(ten[:, -1:]) # <- Obtain the last channel
-            twenty, ten = twenty[:, -1:], ten[:, -1:] # <- Obtain the last channel
+            twenty = twenty[:, -1:] # <- Obtain the last channel
 
             # Create dest filename
             basename = os.path.basename(image_path)
             filename = basename.split(".")[0] # <- Get filename without png extension
             
-            twenty_dest_dir = os.path.join(objectmap_split, f"{filename}_20.png")
-            ten_dest_dir = os.path.join(objectmap_split, f"{filename}_10.png")
+            twenty_dest_dir = os.path.join(objectmap_split, f"{filename}_20.pt")
 
             print(f"Saving... {twenty_dest_dir}")
-            print(f"Saving... {ten_dest_dir}")
+
+            torch.save(twenty.cpu(), twenty_dest_dir)
             
-            save_image(twenty, twenty_dest_dir) ; save_image(ten, ten_dest_dir)
+            # save_image(twenty, twenty_dest_dir) ; save_image(ten, ten_dest_dir)
 
         ### ----------------------------------------
         # Multi Batch | Multiple Inference Per Batch (Multi-Images)

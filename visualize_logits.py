@@ -1,6 +1,7 @@
 from modules.YOLOUSegPlusPlus import YOLOUSegPlusPlus
 from custom_yolo_predictor.custom_detseg_predictor import CustomSegmentationPredictor
 from dataset import CustomDataset
+import torch
 
 import os
 import time
@@ -18,6 +19,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from monai.losses import DiceLoss
 from monai.metrics import DiceMetric
+
+import nms
 
 import cv2
 from torchvision import transforms  
@@ -53,34 +56,38 @@ if __name__ == "__main__":
     YOLO_predictor = CustomSegmentationPredictor(overrides=p_args)
     YOLO_predictor.setup_model(p_args["model"])
 
-    # x = torch.zeros(1, 4, 160, 160).to("cuda")
-    # x = cv2.imread("archive/BraTS-SSA-00015-00062-t1c_image.png", cv2.IMREAD_UNCHANGED)
-    # x = cv2.imread("archive/BraTS-SSA-00002-00030-t1c_image.png", cv2.IMREAD_UNCHANGED)
-    # x = cv2.imread("archive/BraTS-SSA-00015-00062-t1c_image.png", cv2.IMREAD_UNCHANGED)
+    x = cv2.imread("archive/BraTS-SSA-00002-00030-t1c_image.png", cv2.IMREAD_UNCHANGED)
     
-    x = cv2.imread("BraTS-SSA-00041-0007-t1c_image.png", cv2.IMREAD_UNCHANGED)
-    x = transforms.ToTensor()(x)
-    x = transforms.Resize(size=(160, 160))(x)
-    x = x.to("cuda")  
-    x = x.unsqueeze(0)  
+#     x = transforms.ToTensor()(x)
+#     x = transforms.Resize(size=(160, 160))(x)
+#     x = x.to("cuda")  
+#     x = x.unsqueeze(0)  
+# 
+#     model = YOLO_predictor.model.model
+#     model.to("cuda")
+#     x = model(x)
+# 
+#     detect_branch, cls_branch = x
+#     a,b,c = cls_branch
 
-    model = YOLO_predictor.model.model
-    model.to("cuda")
-    x = model(x)
-
-    detect_branch, cls_branch = x
-    a,b,c = cls_branch
-
-    conf = argmax_conf(detect_branch)
-
-    heatmap = a[:, -1:]
-    heatmap = torch.sigmoid(heatmap)
-    confidence = argmax_conf(detect_branch)
-    spatial_confidence = spatial_confidence(heatmap)
+    B, G, R, A = cv2.split(x)
+    channels = [B, G, R, A]
+    names = ['channel_B_data', 'channel_G_data', 'channel_R_data', 'channel_A_data']
     
-    print(confidence, spatial_confidence)
-    plt.imshow(heatmap.squeeze(0).squeeze(0).cpu().numpy())
-    plt.show()
+    for channel, name in zip(channels, names):
+        filename = f'{name}.png'
+        success = cv2.imwrite(filename, channel)
+    
+#     conf = argmax_conf(detect_branch)
+# 
+    # heatmap = a[:, -1:]
+    # heatmap = torch.sigmoid(heatmap)
+#     confidence = argmax_conf(detect_branch)
+#     spatial_confidence = spatial_confidence(heatmap)
+    
+    # print(confidence, spatial_confidence)
+    # plt.imshow(heatmap.squeeze(0).squeeze(0).cpu().numpy())
+    # plt.show()
 
 """TRASH CODE CORNER
 
