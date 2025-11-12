@@ -153,10 +153,9 @@ class YOLOSegPlusPlus(Module):
         self.encoder.eval() 
 
         self.upsample = Upsample(scale_factor = 2, mode = "bilinear", align_corners = False)
-        # self.input = DoubleLightConv(1, 64) # 20x20 Spatial Resolution
         self.decoder = nn.ModuleList([
-            Sequential( # <- Mixing (64 Input) + (128 Skip)
-                C3Ghost(128, 96, n=1), # +1 
+            Sequential( # <- Mixing (128 Skip) + (1 Logits)
+                C3Ghost(128+1, 96, n=1), 
                 ECA(),
             ),
             Sequential( # <- Assume Upsample Here 20x20 -> 40x40
@@ -263,12 +262,10 @@ class YOLOSegPlusPlus(Module):
 
         # Decoder (trainable)
         for idx, module in enumerate(self.decoder): 
-        
             if idx in self._indices.get("skip_connections_decoder"): 
                 skip = self.skip_connections.pop()
                 if idx == 0: 
-                    # x = torch.concat([skip, logits], dim=1)
-                    pass
+                    x = torch.concat([skip, logits], dim=1)
                 else: 
                     x = torch.concat([x, skip], dim=1)
             x = module(x)

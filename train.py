@@ -2,6 +2,9 @@ from YOLOSegPlusPlus import YOLOSegPlusPlus
 from custom_yolo_predictor.custom_detseg_predictor import CustomSegmentationPredictor
 from dataset import CustomDataset
 
+from ultralytics.nn.modules import Conv
+from torch import nn
+
 import os
 import time
 from typing import Tuple, List, Union
@@ -19,12 +22,9 @@ import matplotlib.pyplot as plt
 from monai.losses import DiceLoss
 from monai.metrics import DiceMetric
 
-from torchvision.transforms.functional import gaussian_blur
-import torchvision
-
 class Trainer: 
     def __init__(self,
-                model: YOLOUSegPlusPlus,
+                model: YOLOSegPlusPlus,
                 data_path: str, 
                 model_path: str = None,
                 device: str = "cuda",
@@ -407,7 +407,8 @@ class Trainer:
                     torch.save(self.model.state_dict(), os.path.join(os.path.join(model_dir, "best.pth")))
                     patience = 0
                 else: 
-                    print(f"Validation Dice Metric improved slightly from {best_val_metric:.4f} to {val_dice_metric:.4f}, but not significantly enough to save the model.")
+                    print(f"Validation Dice Metric improved slightly from {best_val_metric:.4f} to {val_dice_metric:.4f}, but not significantly enough to reset patience.")
+                    torch.save(self.model.state_dict(), os.path.join(os.path.join(model_dir, "best.pth")))
                     if epoch+1 >= self.early_stopping_start: 
                         patience+=1
             else:
@@ -418,8 +419,8 @@ class Trainer:
             history_df.to_csv(os.path.join(dest_dir, "history.csv"), index=False)
 
             print("-"*30)
-            print(f"This is Patience {patience}")
             print(f"This is Best Dice Score:  {best_val_metric}")
+            print(f"This is Patience {patience}")
             print(f"Training Speed per EPOCH (in seconds): {end_time - start_time:.4f}")
             print(f"Maximum Gigabytes of VRAM Used: {torch.cuda.max_memory_reserved(self.device) * 1e-9:.4f}")
             print(f"Train Loss EPOCH {epoch+1}: {train_loss:.4f}")
@@ -458,9 +459,6 @@ def count_parameters(model: torch.nn.Module, only_trainable: bool = True) -> Uni
         all_params = sum(p.numel() for p in model.parameters())
         return [trainable_params, all_params]
 
-
-from ultralytics.nn.modules import Conv
-from torch import nn
 def modify_YOLO(model): 
     old_conv_module = model.model.model.model[0]
     print(old_conv_module)
@@ -532,10 +530,10 @@ if __name__ == "__main__":
     # Create predictor and Load checkpoint
     YOLO_predictor = CustomSegmentationPredictor(overrides=p_args)
     YOLO_predictor.setup_model(p_args["model"])
-    modify_YOLO(YOLO_predictor)
+    # modify_YOLO(YOLO_predictor)
 
     # Create YOLOU instance
-    model = YOLOUSegPlusPlus(predictor=YOLO_predictor)
+    model = YOLOSegPlusPlus(predictor=YOLO_predictor)
 
     YOLO_predictor.model.to('cpu')
 
