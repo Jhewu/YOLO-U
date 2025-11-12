@@ -294,7 +294,7 @@ class Trainer:
         scaler = GradScaler(self.device) # --> mixed precision
 
         # Initialize variables for callbacks
-        self.history = dict(train_loss=[], val_loss=[], train_dice_metric=[], val_dice_metric=[], val_hd95_metric=[])
+        self.history = dict(train_loss=[], val_loss=[], train_dice_metric=[], val_dice_metric=[], val_hd95_metric=[], val_recall=[], val_precision=[])
         best_val_metric = float("-inf")
 
         # Create result directory
@@ -414,7 +414,8 @@ class Trainer:
             
             self.dice_metric.reset() # <- Reset again
             self.hd95.reset()
-            # self.assd.reset()
+            precision = recall = 0
+            
 
             self.model.eval()
             val_running_loss = 0
@@ -433,6 +434,13 @@ class Trainer:
                     pred_sigmoid = torch.nn.functional.sigmoid(pred)
                     pred_binary  = (pred_sigmoid > 0.5).float()
                     self.dice_metric(pred_binary, mask)   
+
+                    TP = (pred_binary * mask).sum().float()
+                    FP = (pred_binary * (1 - mask)).sum().float()
+                    FN = ((1 - pred_binary) * mask).sum().float()
+                    precision+=TP / (TP + FP + 1e-6).item()
+                    recall+=TP / (TP + FN + 1e-6).item()
+                    
                     pred_hot_encoded = torch.cat([1 - pred_binary, pred_binary], dim=1)
                     mask_hot_encoded = torch.cat([1 - mask, mask], dim=1)
                     
@@ -440,6 +448,8 @@ class Trainer:
                     # self.assd(pred_hot_encoded, mask_hot_encoded)        
 
                 val_loss = val_running_loss / (idx + 1)
+                precision = precision / (idx + 1)
+                recall = recall / (idx + 1)
 
                 # Dice Metric
                 val_dice_metric = self.dice_metric.aggregate().item()
@@ -466,8 +476,8 @@ class Trainer:
             self.history["val_dice_metric"].append(val_dice_metric)
             # self.history["train_hd95_metric"].append(train_hd95_metric)
             self.history["val_hd95_metric"].append(val_hd95_metric)
-            # self.history["train_assd_metric"].append(train_assd_metric)
-            # self.history["val_assd_metric"].append(val_assd_metric)
+            self.history["val_precision"].append(precision)
+            self.history["val_recall"].append(recall)
                         
             if val_dice_metric > best_val_metric: 
                 if abs(best_val_metric - val_dice_metric) > 1e-3:
@@ -497,7 +507,8 @@ class Trainer:
             print(f"Train DICE Score EPOCH {epoch+1}: {train_dice_metric:.4f}")
             print(f"Valid DICE Score EPOCH {epoch+1}: {val_dice_metric:.4f}")
             print(f"Valid HD95 Score EPOCH {epoch+1}: {val_hd95_metric}")
-            # print(f"Valid ASSD Score EPOCH {epoch+1}: {val_assd_metric}")
+            print(f"Valid Precision Score EPOCH {epoch+1}: {precision}")
+            print(f"Valid Recall Score EPOCH {epoch+1}: {recall}")
 
             print("-"*30)
 
