@@ -166,13 +166,11 @@ class YOLOSegPlusPlus(Module):
                 C3Ghost(64+64, 64),
                 ECA(),
             ),
-            Sequential( # <- Assume Upsample Here 40x40 -> 80x80 + (32 Skip)
-                # C3Ghost(64+32, 32),
+            Sequential( # <- Assume Upsample Here 40x40 -> 80x80
                 self.upsample, 
-                # LightConv(32, 32, k=3, act=True)
                 DoubleLightConv(64, 32)
             ),
-            Sequential( # <- Assume Upsample Here 80x80 -> 160x160 + (16 Skip)
+            Sequential( # <- Assume Upsample Here 80x80 -> 160x160 
                 self.upsample, 
                 DoubleLightConv(32, 16)
             ),  

@@ -424,7 +424,7 @@ class Trainer:
             if val_dice_metric > best_val_dice_metric: 
                 if abs(best_val_dice_metric - val_dice_metric) > 1e-3:
                     print(f"Validation Dice Metric improved from {best_val_dice_metric:.4f} to {val_dice_metric:.4f}. Saving model...")
-                    best_val_metric = val_dice_metric
+                    best_val_dice_metric = val_dice_metric
                     torch.save(self.model.state_dict(), os.path.join(os.path.join(model_dir, "best.pth")))
                     patience = 0
                 else: 
@@ -582,7 +582,7 @@ if __name__ == "__main__":
                     load_and_train=True,
                     mixed_precision = True,
                 
-                    epochs=75,
+                    epochs=100,
                     image_size = 160,
                     batch_size = 128,
                     lr = 1e-4,
