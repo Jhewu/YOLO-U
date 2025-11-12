@@ -21,7 +21,7 @@ from tqdm import tqdm
 import pandas as pd
 import matplotlib.pyplot as plt
 from monai.losses import DiceLoss
-from monai.metrics import DiceMetric
+from monai.metrics import DiceMetric, HausdorffDistanceMetric, SurfaceDistanceMetric
 
 class Trainer: 
     def __init__(self,
@@ -102,7 +102,7 @@ class Trainer:
             batch = True,               # should improve stability during training
             reduction="mean")
 
-        self.metric = DiceMetric(
+        self.dice_metric = DiceMetric(
             include_background = False, 
             reduction="mean_batch",     
             get_not_nans = False, 
@@ -110,6 +110,19 @@ class Trainer:
             num_classes = 2,            # 2 stands for [0, 1], technically single class
             return_with_label = False
         )
+        self.hd95 = HausdorffDistanceMetric(
+            include_background = False, 
+            percentile=95, 
+            reduction = "none",
+            get_not_nans = True, 
+        )
+
+        # self.assd = SurfaceDistanceMetric(
+        #     include_background = False, 
+        #     symmetric = True, 
+        #     reduction = "none", 
+        #     get_not_nans = True,
+        # )
 
         self.image_size = image_size
         self.batch_size = batch_size
@@ -281,7 +294,7 @@ class Trainer:
         scaler = GradScaler(self.device) # --> mixed precision
 
         # Initialize variables for callbacks
-        self.history = dict(train_loss=[], val_loss=[], train_dice_metric=[], val_dice_metric=[])
+        self.history = dict(train_loss=[], val_loss=[], train_dice_metric=[], val_dice_metric=[], val_hd95_metric=[])
         best_val_metric = float("-inf")
 
         # Create result directory
@@ -304,7 +317,9 @@ class Trainer:
         patience = 0 # --> local patience for early stopping
         for epoch in tqdm(range(self.epochs)):
             self.model.train()
-            self.metric.reset()
+            self.dice_metric.reset()
+            # self.hd95.reset()
+            # self.assd.reset()
         
             start_time = time.time()
             train_running_loss = 0
@@ -346,7 +361,12 @@ class Trainer:
                     
                     pred_sigmoid = torch.nn.functional.sigmoid(pred)
                     pred_binary  = (pred_sigmoid > 0.5).float()
-                    self.metric(pred_binary, mask)
+                    self.dice_metric(pred_binary, mask)
+                    # pred_hot_encoded = torch.cat([1 - pred_binary, pred_binary], dim=1)
+                    # mask_hot_encoded = torch.cat([1 - mask, mask], dim=1)
+                    # 
+                    # self.hd95(pred_hot_encoded, mask_hot_encoded)
+                    # self.assd(pred_hot_encoded, mask_hot_encoded)
 
             else:
                 for idx, img_mask_heatmap in enumerate(tqdm(train_dataloader)):
@@ -367,12 +387,34 @@ class Trainer:
                     # Update metrics
                     pred_sigmoid = torch.nn.functional.sigmoid(pred)
                     pred_binary  = (pred_sigmoid > 0.5).float()
-                    self.metric(pred_binary, mask)
+                    self.dice_metric(pred_binary, mask)
+                    # pred_hot_encoded = torch.cat([1 - pred_binary, pred_binary], dim=1)
+                    # mask_hot_encoded = torch.cat([1 - mask, mask], dim=1)
+                    
+                    # self.hd95(pred_hot_encoded, mask_hot_encoded)
+                    # self.assd(pred_hot_encoded, mask_hot_encoded)
     
             end_time = time.time()
             train_loss = train_running_loss / (idx + 1)
-            train_dice_metric = self.metric.aggregate().item()
-            self.metric.reset() # <- Reset again
+
+            # Dice Metric
+            train_dice_metric = self.dice_metric.aggregate().item()
+
+            # HD95 Metric
+            # hd95_raw_results, hd95_not_nans_count = self.hd95.aggregate()
+            # is_valid = hd95_not_nans_count.bool()
+            # successful_hd95_values = hd95_values[is_valid]
+            # train_hd95_metric = torch.mean(successful_hd95_values).item()
+
+            # ASSD Metric
+            # assd_raw_results, assd_not_nans_count = self.assd.aggregate()
+            # is_valid = assd_not_nans_count.bool()
+            # successful_assd_values = assd_values[is_valid]
+            # train_assd_metric = torch.mean(successful_assd_values).item()
+            
+            self.dice_metric.reset() # <- Reset again
+            self.hd95.reset()
+            # self.assd.reset()
 
             self.model.eval()
             val_running_loss = 0
@@ -390,10 +432,29 @@ class Trainer:
                     val_running_loss += loss.item()
                     pred_sigmoid = torch.nn.functional.sigmoid(pred)
                     pred_binary  = (pred_sigmoid > 0.5).float()
-                    self.metric(pred_binary, mask)             
+                    self.dice_metric(pred_binary, mask)   
+                    pred_hot_encoded = torch.cat([1 - pred_binary, pred_binary], dim=1)
+                    mask_hot_encoded = torch.cat([1 - mask, mask], dim=1)
+                    
+                    self.hd95(pred_hot_encoded, mask_hot_encoded)
+                    # self.assd(pred_hot_encoded, mask_hot_encoded)        
 
                 val_loss = val_running_loss / (idx + 1)
-                val_dice_metric = self.metric.aggregate().item()
+
+                # Dice Metric
+                val_dice_metric = self.dice_metric.aggregate().item()
+
+                # HD95 Metric
+                hd95_raw_results, hd95_not_nans_count = self.hd95.aggregate()
+                is_valid = hd95_not_nans_count.bool()
+                successful_hd95_values = hd95_raw_results[is_valid]
+                val_hd95_metric = torch.mean(successful_hd95_values).item()
+
+                # ASSD Metric
+                # assd_raw_results, assd_not_nans_count = self.assd.aggregate()
+                # is_valid = assd_not_nans_count.bool()
+                # successful_assd_values = assd_raw_results[is_valid]
+                # val_assd_metric = torch.mean(successful_assd_values).item()
             
             # Update the scheduler
             scheduler.step()
@@ -401,9 +462,13 @@ class Trainer:
             # update the history
             self.history["train_loss"].append(train_loss)
             self.history["val_loss"].append(val_loss)
-            self.history["val_dice_metric"].append(val_dice_metric)
             self.history["train_dice_metric"].append(train_dice_metric)
-
+            self.history["val_dice_metric"].append(val_dice_metric)
+            # self.history["train_hd95_metric"].append(train_hd95_metric)
+            self.history["val_hd95_metric"].append(val_hd95_metric)
+            # self.history["train_assd_metric"].append(train_assd_metric)
+            # self.history["val_assd_metric"].append(val_assd_metric)
+                        
             if val_dice_metric > best_val_metric: 
                 if abs(best_val_metric - val_dice_metric) > 1e-3:
                     print(f"Validation Dice Metric improved from {best_val_metric:.4f} to {val_dice_metric:.4f}. Saving model...")
@@ -423,7 +488,7 @@ class Trainer:
             history_df.to_csv(os.path.join(dest_dir, "history.csv"), index=False)
 
             print("-"*30)
-            print(f"This is Best Dice Score:  {best_val_metric}")
+            print(f"This is Best Val Dice Score:  {best_val_metric}")
             print(f"This is Patience {patience}")
             print(f"Training Speed per EPOCH (in seconds): {end_time - start_time:.4f}")
             print(f"Maximum Gigabytes of VRAM Used: {torch.cuda.max_memory_reserved(self.device) * 1e-9:.4f}")
@@ -431,6 +496,9 @@ class Trainer:
             print(f"Valid Loss EPOCH {epoch+1}: {val_loss:.4f}")
             print(f"Train DICE Score EPOCH {epoch+1}: {train_dice_metric:.4f}")
             print(f"Valid DICE Score EPOCH {epoch+1}: {val_dice_metric:.4f}")
+            print(f"Valid HD95 Score EPOCH {epoch+1}: {val_hd95_metric}")
+            # print(f"Valid ASSD Score EPOCH {epoch+1}: {val_assd_metric}")
+
             print("-"*30)
 
             if patience >= self.patience: 
