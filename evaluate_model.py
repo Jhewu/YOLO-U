@@ -6,7 +6,7 @@ import os
 import time
 from typing import Tuple, List, Union
 from itertools import cycle
-# from nms import non_max_suppression
+from nms import non_max_suppression
 
 import torch
 from torch.amp import GradScaler
@@ -128,7 +128,7 @@ class Evaluator:
             torch.cuda.manual_seed_all(SEED)
 
         self.metric.reset()
-        val_precision_metric = val_recall_metric = 0
+        total_TP = total_FP = total_FN = 0
         start_time = time.time()
         
         with torch.no_grad():
@@ -144,16 +144,15 @@ class Evaluator:
                 logits = torch.sigmoid(a[:, -1:]) # <- Extract last item
 
                 ### Calculate the confidence    
-#                 out = non_max_suppression(detect_branch)[0]
-# 
-#                 if len(out) == 0: 
-#                     pred_binary = torch.zeros(1, 1, self.image_size, self.image_size).to(self.device)
-#                 else: 
-#                     conf = out[0][4]
-#                         
-#                     if conf <= 0.45: 
-#                         pred_binary = torch.zeros(1, 1, self.image_size, self.image_size).to(self.device)
-#                     else:
+                out = non_max_suppression(detect_branch)[0]
+
+                # if len(out) == 0: 
+                #     pred_binary = torch.zeros(1, 1, self.image_size, self.image_size).to(self.device)
+                # else: 
+                #     conf = out[0][4]
+                #     if conf <= 0: 
+                #         pred_binary = torch.zeros(1, 1, self.image_size, self.image_size).to(self.device)
+                #     else:
                 pred = self.model(img, logits)
                 pred_sigmoid = torch.nn.functional.sigmoid(pred)
                 pred_binary  = (pred_sigmoid > 0.5).float()
@@ -167,15 +166,16 @@ class Evaluator:
                 TP = (pred_binary * mask).sum().float()
                 FP = (pred_binary * (1 - mask)).sum().float()
                 FN = ((1 - pred_binary) * mask).sum().float()
-                val_precision_metric+=TP / (TP + FP + 1e-6).item()
-                val_recall_metric+=TP / (TP + FN + 1e-6).item()
+                total_TP += TP.item()
+                total_FP += FP.item()
+                total_FN += FN.item()
 
                 # Calculate Dice
                 self.metric(pred_binary, mask)          
 
             # Aggregate Precision & Recall
-            val_precision_metric = (val_precision_metric / (idx + 1)).item()
-            val_recall_metric = (val_recall_metric / (idx + 1)).item()
+            val_precision_metric = total_TP / (total_TP + total_FP + 1e-6)
+            val_recall_metric = total_TP / (total_TP + total_FN + 1e-6)
 
             # Aggregate HD95
             hd95_raw_results, hd95_not_nans_count = self.hd95.aggregate()
