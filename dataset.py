@@ -84,10 +84,18 @@ class CustomDataset(Dataset):
             # Convert to [1, H, W] tensor
             # objectmap_tensor = self.to_tensor(objectmap_np)
             objectmap_tensor = torch.load(objectmap_path).squeeze(0)
+
+            # Normalization
+            mean = objectmap_tensor.mean()
+            std = objectmap_tensor.std()
+
+            if std > 0: objectmap_tensor = (objectmap_tensor - mean) / std
+            else: objectmap_tensor = objectmap_tensor - mean # Avoid NaN if std = 0
             
             # objectmap_tensors.append(objectmap_tensor)
             
-            return img_tensor, mask_tensor, torch.sigmoid(objectmap_tensor)
+            # return img_tensor, mask_tensor, torch.sigmoid(objectmap_tensor)
+            return img_tensor, mask_tensor, objectmap_tensor
         else: # Inference: no heatmaps
             return img_tensor, mask_tensor
             

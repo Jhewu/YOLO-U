@@ -6,3 +6,5 @@ prev*/
 archive_runs/
 trained*/
 old_checkpoint/*
+new_yolo_checkpoint/
+ablation_study/*

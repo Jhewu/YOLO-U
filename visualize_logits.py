@@ -1,4 +1,4 @@
-from modules.YOLOUSegPlusPlus import YOLOUSegPlusPlus
+from YOLOSegPlusPlus import YOLOSegPlusPlus
 from custom_yolo_predictor.custom_detseg_predictor import CustomSegmentationPredictor
 from dataset import CustomDataset
 import torch
@@ -19,8 +19,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from monai.losses import DiceLoss
 from monai.metrics import DiceMetric
-
-import nms
 
 import cv2
 from torchvision import transforms  
@@ -46,7 +44,7 @@ def argmax_conf(detect_branch):
 
 if __name__ == "__main__": 
     # Create trainer and predictor instances
-    p_args = dict(model="yolo_checkpoint/weights/best.pt",
+    p_args = dict(model="new_yolo_checkpoint/weights/best.pt",
                 data=f"data/data.yaml", 
                 verbose=True,
                 imgsz=160, 
@@ -56,20 +54,21 @@ if __name__ == "__main__":
     YOLO_predictor = CustomSegmentationPredictor(overrides=p_args)
     YOLO_predictor.setup_model(p_args["model"])
 
-    x = cv2.imread("archive/BraTS-SSA-00002-00030-t1c_image.png", cv2.IMREAD_UNCHANGED)
+    x = cv2.imread("archive/BraTS-SSA-00041-00043-t1c_image.png", cv2.IMREAD_UNCHANGED)
     
-#     x = transforms.ToTensor()(x)
-#     x = transforms.Resize(size=(160, 160))(x)
-#     x = x.to("cuda")  
-#     x = x.unsqueeze(0)  
-# 
-#     model = YOLO_predictor.model.model
-#     model.to("cuda")
-#     x = model(x)
-# 
-#     detect_branch, cls_branch = x
-#     a,b,c = cls_branch
+    x = transforms.ToTensor()(x)
+    x = transforms.Resize(size=(160, 160))(x)
+    x = x.to("cuda")  
+    x = x.unsqueeze(0)  
 
+    model = YOLO_predictor.model.model
+    model.to("cuda")
+    x = model(x)
+
+    detect_branch, cls_branch = x
+    a,b,c = cls_branch
+
+    """SPLIT CHANNELS
     B, G, R, A = cv2.split(x)
     channels = [B, G, R, A]
     names = ['channel_B_data', 'channel_G_data', 'channel_R_data', 'channel_A_data']
@@ -77,17 +76,18 @@ if __name__ == "__main__":
     for channel, name in zip(channels, names):
         filename = f'{name}.png'
         success = cv2.imwrite(filename, channel)
+    """
     
-#     conf = argmax_conf(detect_branch)
-# 
-    # heatmap = a[:, -1:]
-    # heatmap = torch.sigmoid(heatmap)
-#     confidence = argmax_conf(detect_branch)
-#     spatial_confidence = spatial_confidence(heatmap)
+    conf = argmax_conf(detect_branch)
+
+    heatmap = a[:, -1:]
+    heatmap = torch.sigmoid(heatmap)
+    confidence = argmax_conf(detect_branch)
+    spatial_confidence = spatial_confidence(heatmap)
     
-    # print(confidence, spatial_confidence)
-    # plt.imshow(heatmap.squeeze(0).squeeze(0).cpu().numpy())
-    # plt.show()
+    print(confidence, spatial_confidence)
+    plt.imshow(heatmap.squeeze(0).squeeze(0).cpu().numpy())
+    plt.show()
 
 """TRASH CODE CORNER
 

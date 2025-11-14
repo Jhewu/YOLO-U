@@ -398,8 +398,8 @@ class Trainer:
                     self.hd95(pred_hot_encoded, mask_hot_encoded)
 
                 val_loss = val_running_loss / (idx + 1)
-                val_precision = val_precision / (idx + 1)
-                val_recall = val_recall / (idx + 1)
+                val_precision = (val_precision / (idx + 1)).item()
+                val_recall = (val_recall / (idx + 1)).item()
                 val_dice_metric = self.dice_metric.aggregate().item()
 
                 # HD95 Metric
@@ -455,8 +455,8 @@ class Trainer:
             
             print(f"Valid HD95 Score EPOCH {epoch+1}: {val_hd95_metric:.4f}")
             
-            print(f"Valid Precision Score EPOCH {epoch+1}: {val_precision:.4f}")
-            print(f"Valid Recall Score EPOCH {epoch+1}: {val_recall:.4f}")
+            print(f"Valid PRECISION Score EPOCH {epoch+1}: {val_precision:.4f}")
+            print(f"Valid RECALL Score EPOCH {epoch+1}: {val_recall:.4f}")
 
             print("-"*30)
 
@@ -562,7 +562,7 @@ if __name__ == "__main__":
     # Create predictor and Load checkpoint
     YOLO_predictor = CustomSegmentationPredictor(overrides=p_args)
     YOLO_predictor.setup_model(p_args["model"])
-    # modify_YOLO(YOLO_predictor)
+    modify_YOLO(YOLO_predictor)
 
     # Create YOLOU instance
     model = YOLOSegPlusPlus(predictor=YOLO_predictor)
@@ -582,7 +582,7 @@ if __name__ == "__main__":
                     load_and_train=True,
                     mixed_precision = True,
                 
-                    epochs=100,
+                    epochs=75,
                     image_size = 160,
                     batch_size = 128,
                     lr = 1e-4,
