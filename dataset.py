@@ -94,8 +94,8 @@ class CustomDataset(Dataset):
             
             # objectmap_tensors.append(objectmap_tensor)
             
-            # return img_tensor, mask_tensor, torch.sigmoid(objectmap_tensor)
-            return img_tensor, mask_tensor, objectmap_tensor
+            return img_tensor, mask_tensor, torch.sigmoid(objectmap_tensor)
+            # return img_tensor, mask_tensor, objectmap_tensor
         else: # Inference: no heatmaps
             return img_tensor, mask_tensor
             

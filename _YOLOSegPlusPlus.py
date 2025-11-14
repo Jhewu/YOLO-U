@@ -151,11 +151,10 @@ class YOLOSegPlusPlus(Module):
         for param in self.encoder.parameters(): # <- Frozen
             param.requires_grad = False
         self.encoder.eval() 
-
         self.upsample = Upsample(scale_factor = 2, mode = "bilinear", align_corners = False)
         self.decoder = nn.ModuleList([
             Sequential( # <- Mixing (128 Skip) + (1 Logits)
-                C3Ghost(128+1, 96, n=1), 
+                C3Ghost(128, 96, n=1), 
                 ECA(),
             ),
             Sequential( # <- Assume Upsample Here 20x20 -> 40x40
@@ -168,7 +167,7 @@ class YOLOSegPlusPlus(Module):
             ),
             Sequential( # <- Assume Upsample Here 40x40 -> 80x80
                 self.upsample, 
-                DoubleLightConv(64, 32)
+                DoubleLightConv(64, 32) 
             ),
             Sequential( # <- Assume Upsample Here 80x80 -> 160x160 
                 self.upsample, 
@@ -263,8 +262,10 @@ class YOLOSegPlusPlus(Module):
             if idx in self._indices.get("skip_connections_decoder"): 
                 skip = self.skip_connections.pop()
                 if idx == 0: 
-                    x = torch.concat([skip, logits], dim=1)
-                    # pass
+                    # x = torch.concat([skip, logits], dim=1)
+                    # x = skip + logits
+                    pass
+                    x = skip
                 else: 
                     x = torch.concat([x, skip], dim=1)
             x = module(x)

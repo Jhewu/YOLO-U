@@ -1,4 +1,4 @@
-from modules.YOLOUSegPlusPlus import YOLOUSegPlusPlus
+from YOLOSegPlusPlus import YOLOSegPlusPlus
 from custom_yolo_predictor.custom_detseg_predictor import CustomSegmentationPredictor
 from dataset import CustomDataset
 
@@ -6,7 +6,7 @@ import os
 import time
 from typing import Tuple, List, Union
 from itertools import cycle
-from nms import non_max_suppression
+# from nms import non_max_suppression
 
 import torch
 from torch.amp import GradScaler
@@ -18,7 +18,7 @@ from tqdm import tqdm
 import pandas as pd
 import matplotlib.pyplot as plt
 from monai.losses import DiceLoss
-from monai.metrics import DiceMetric
+from monai.metrics import DiceMetric, HausdorffDistanceMetric
 
 import cv2
 from torchvision import transforms  
@@ -31,7 +31,7 @@ import torch.nn.functional as F
 
 class Evaluator: 
     def __init__(self,
-                model: YOLOUSegPlusPlus,
+                model: YOLOSegPlusPlus,
                 data_path: str, 
                 model_path: str = None,
                 device: str = "cuda",
@@ -53,6 +53,13 @@ class Evaluator:
             ignore_empty = False, 
             num_classes = 2,            # 2 stands for [0, 1], technically single class
             return_with_label = False
+        )
+
+        self.hd95 = HausdorffDistanceMetric(
+            include_background = False, 
+            percentile=95, 
+            reduction = "none",
+            get_not_nans = True, 
         )
 
         self.image_size = image_size
@@ -121,46 +128,68 @@ class Evaluator:
             torch.cuda.manual_seed_all(SEED)
 
         self.metric.reset()
+        val_precision_metric = val_recall_metric = 0
         start_time = time.time()
         
         with torch.no_grad():
             for idx, img_mask_heatmap in enumerate(tqdm(test_dataloader)):
                 img = img_mask_heatmap[0].float().to(self.device)
                 mask = img_mask_heatmap[1].float().to(self.device)
-                logitsa = img_mask_heatmap[2][0].float().to(self.device)
-                # logitsa.squeeze(0)
+                heatmap = img_mask_heatmap[2][0].float().to(self.device).squeeze(0)
 
                 ### YOLO inference
-                # yolo_out = self.model.yolo_predictor(img)
                 yolo_out = YOLO_predictor.model(img)
-                detect_branch, clsq_branch = yolo_out
+                detect_branch, cls_branch = yolo_out
                 a, b, c = cls_branch
-                # logits = cls_branch[0][:, -1:] # <- Extract last item
-                logitsb = a[:, -1:] # <- Extract last item
-
-                print(logitsa.max(), logitsa.min(), logitsa.mean())
-                print(logitsb.max(), logitsb.min(), logitsa.mean())
-                print()
+                logits = torch.sigmoid(a[:, -1:]) # <- Extract last item
 
                 ### Calculate the confidence    
-                # out = non_max_suppression(detect_branch)[0]
+#                 out = non_max_suppression(detect_branch)[0]
+# 
+#                 if len(out) == 0: 
+#                     pred_binary = torch.zeros(1, 1, self.image_size, self.image_size).to(self.device)
+#                 else: 
+#                     conf = out[0][4]
+#                         
+#                     if conf <= 0.45: 
+#                         pred_binary = torch.zeros(1, 1, self.image_size, self.image_size).to(self.device)
+#                     else:
+                pred = self.model(img, logits)
+                pred_sigmoid = torch.nn.functional.sigmoid(pred)
+                pred_binary  = (pred_sigmoid > 0.5).float()
 
-                # if len(out) == 0: 
-                #     pred_binary = torch.zeros(1, 1, self.image_size, self.image_size).to(self.device)
-                # else: 
-                #     conf = out[0][4]
-                        
-                    # if conf <= 0.45: 
-                        # pred_binary = torch.zeros(1, 1, self.image_size, self.image_size).to(self.device)
-                    # else:
-                        # pred = self.model(img, logits)
-                        # pred_sigmoid = torch.nn.functional.sigmoid(pred)
-                        # pred_binary  = (pred_sigmoid > 0.5).float()
-            
-                # self.metric(pred_binary, mask)             
-            # val_dice_metric = self.metric.aggregate().item()
+                # Calculate HD95
+                pred_hot_encoded = torch.cat([1 - pred_binary, pred_binary], dim=1)
+                mask_hot_encoded = torch.cat([1 - mask, mask], dim=1)                    
+                self.hd95(pred_hot_encoded, mask_hot_encoded)
 
-        # print(f"Final Dice Metric: {val_dice_metric}...")
+                # Calculate Precision and Recall
+                TP = (pred_binary * mask).sum().float()
+                FP = (pred_binary * (1 - mask)).sum().float()
+                FN = ((1 - pred_binary) * mask).sum().float()
+                val_precision_metric+=TP / (TP + FP + 1e-6).item()
+                val_recall_metric+=TP / (TP + FN + 1e-6).item()
+
+                # Calculate Dice
+                self.metric(pred_binary, mask)          
+
+            # Aggregate Precision & Recall
+            val_precision_metric = (val_precision_metric / (idx + 1)).item()
+            val_recall_metric = (val_recall_metric / (idx + 1)).item()
+
+            # Aggregate HD95
+            hd95_raw_results, hd95_not_nans_count = self.hd95.aggregate()
+            is_valid = hd95_not_nans_count.bool()
+            successful_hd95_values = hd95_raw_results[is_valid]
+            val_hd95_metric = torch.mean(successful_hd95_values).item()
+
+            # Aggregate Dice   
+            val_dice_metric = self.metric.aggregate().item()
+
+        print(f"Final Dice Metric: {val_dice_metric}...")
+        print(f"Final HD95 Metric: {val_hd95_metric}...")
+        print(f"Final Precision Metric: {val_precision_metric}...")
+        print(f"Final Precision Metric: {val_recall_metric}...")
 
 def count_parameters(model: torch.nn.Module, only_trainable: bool = True) -> Union[int, List[int]]:
     """
@@ -187,7 +216,7 @@ def count_parameters(model: torch.nn.Module, only_trainable: bool = True) -> Uni
 
 if __name__ == "__main__": 
     # Create trainer and predictor instances
-    p_args = dict(model="yolo_checkpoint/weights/best.pt",
+    p_args = dict(model="new_yolo_checkpoint/weights/best.pt",
                 data=f"data/data.yaml", 
                 verbose=True,
                 imgsz=160, 
@@ -198,11 +227,11 @@ if __name__ == "__main__":
     YOLO_predictor.setup_model(p_args["model"])
 
     # Create YOLOU instance
-    model = YOLOUSegPlusPlus(predictor=YOLO_predictor)
+    model = YOLOSegPlusPlus(predictor=YOLO_predictor)
     # YOLO_predictor.model.to("cpu") # <- Move to CPU since we are not using it
     
     # Load the checkpoint
-    checkpoint = torch.load("2025_11_05_11_27_04/weights/best.pth", map_location=torch.device('cuda'))  # or 'cuda' if using GPU
+    checkpoint = torch.load("ablation_study/baseline/weights/best.pth", map_location=torch.device('cuda'))  # or 'cuda' if using GPU
         
     # If checkpoint is a state_dict directly:
     if 'state_dict' in checkpoint:
